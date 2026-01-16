@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import MeetingList from './components/MeetingList';
@@ -7,7 +7,8 @@ import PersonaCapsules from './components/PersonaCapsules';
 import FolderGrid from './components/FolderGrid';
 import RecordingModal from './components/RecordingModal';
 import AIChatBar from './components/AIChatBar';
-import { AppTab, Meeting } from './types';
+import { AppTab, Meeting, Folder } from './types';
+import { useRecording } from './hooks/useRecording';
 
 const INITIAL_MOCK_MEETINGS: Meeting[] = [
   {
@@ -46,6 +47,8 @@ const App: React.FC = () => {
   const [meetings, setMeetings] = useState<Meeting[]>(INITIAL_MOCK_MEETINGS);
   // 默认为左侧模式，但在小屏幕下初始化为底部模式，之后由用户手动控制
   const [isBottomMode, setIsBottomMode] = useState(() => window.innerWidth < 768);
+  
+  const recording = useRecording();
 
   // 移除自动 resize 监听，改为手动触发
   // 只在组件挂载时进行一次初始化检查（上面的 useState 已经做了）
@@ -93,6 +96,12 @@ const App: React.FC = () => {
         position={isBottomMode ? 'bottom' : 'left'}
         onToggleLayout={toggleLayoutMode}
         onAddClick={() => setIsRecordingModalOpen(true)}
+        recordingState={{
+          isActive: recording.status !== 'idle' && recording.status !== 'finished',
+          isPaused: recording.status === 'paused',
+          duration: recording.duration,
+          onToggle: recording.toggleRecording
+        }}
       />
 
       <main className={`relative flex flex-col flex-1 h-full min-w-0 bg-[#F8F9FB] transition-all duration-300 ${isBottomMode ? 'pb-[80px]' : ''}`}>
@@ -154,6 +163,7 @@ const App: React.FC = () => {
             <RecordingModal 
               onClose={() => setIsRecordingModalOpen(false)} 
               onSuccess={addNewMeeting}
+              recording={recording}
             />
           </>
         )}

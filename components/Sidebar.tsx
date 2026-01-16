@@ -1,6 +1,7 @@
 
 import React from 'react';
 import { AppTab } from '../types';
+import RecordingTimer from './RecordingTimer';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -10,9 +11,15 @@ interface SidebarProps {
   position?: 'left' | 'bottom';
   onToggleLayout?: () => void;
   onAddClick?: () => void;
+  recordingState?: {
+    isActive: boolean;
+    isPaused: boolean;
+    duration: number;
+    onToggle: () => void;
+  };
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ isOpen, activeTab, setActiveTab, position = 'left', onToggleLayout, onAddClick }) => {
+const Sidebar: React.FC<SidebarProps> = ({ isOpen, activeTab, setActiveTab, position = 'left', onToggleLayout, onAddClick, recordingState }) => {
   const isBottom = position === 'bottom';
 
   return (
@@ -52,16 +59,27 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, activeTab, setActiveTab, posi
           horizontal={isBottom}
         />
         
-        {/* 底部模式下的中间加号按钮 */}
+        {/* 底部模式下的中间加号按钮或录音计时器 */}
         {isBottom && (
-          <div className="relative -top-5">
-            <button 
-              onClick={onAddClick}
-              className="w-14 h-14 bg-gradient-to-tr from-[#7bbfea] to-[#33a3dc] rounded-full flex items-center justify-center text-white shadow-[0_8px_16px_rgba(51,163,220,0.3)] hover:scale-105 active:scale-95 transition-all duration-300"
-            >
-              <i className="fa-solid fa-plus text-2xl"></i>
-            </button>
-          </div>
+          recordingState?.isActive ? (
+            <RecordingTimer 
+              duration={recordingState.duration}
+              isPaused={recordingState.isPaused}
+              onToggle={(e) => {
+                recordingState.onToggle();
+              }}
+              onClick={() => onAddClick && onAddClick()} 
+            />
+          ) : (
+            <div className="relative -top-5">
+              <button 
+                onClick={onAddClick}
+                className="w-14 h-14 bg-gradient-to-tr from-[#7bbfea] to-[#33a3dc] rounded-full flex items-center justify-center text-white shadow-[0_8px_16px_rgba(51,163,220,0.3)] hover:scale-105 active:scale-95 transition-all duration-300"
+              >
+                <i className="fa-solid fa-plus text-2xl"></i>
+              </button>
+            </div>
+          )
         )}
 
         <RailNavItem 

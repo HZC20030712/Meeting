@@ -29,3 +29,10 @@ export enum AppTab {
   FOLDERS = 'folders',
   SOCIAL = 'social'
 }
+
+export interface TranscriptSegment {
+  id: string;
+  type: 'user' | 'suggestion';
+  content: string;
+  status?: 'thinking' | 'streaming' | 'done';
+}

@@ -58,6 +58,7 @@ class ASRCallback(RecognitionCallback):
         self.context_buffer = deque() # Stores (timestamp, text)
         self.suggestion_generated = False
         self.generating = False
+        self.is_paused = False # New flag to track pause state
 
     def on_open(self) -> None:
         print("ASR Session opened")
@@ -209,8 +210,8 @@ async def monitor_silence(callback: ASRCallback):
             # Or use a flag in callback.
             
             now = time.time()
-            # Logic: If > 3.5s silence AND not already generated AND not currently generating
-            if (now - callback.last_text_time > 3.5) and (not callback.suggestion_generated) and (not callback.generating):
+            # Logic: If > 3.5s silence AND not already generated AND not currently generating AND not paused
+            if (now - callback.last_text_time > 3.5) and (not callback.suggestion_generated) and (not callback.generating) and (not callback.is_paused):
                 print(f"Silence detected ({now - callback.last_text_time:.1f}s), triggering suggestion...")
                 asyncio.create_task(generate_suggestion(callback))
                 
@@ -242,10 +243,24 @@ async def websocket_endpoint(websocket: WebSocket):
         print("ASR started")
         
         while True:
-            data = await websocket.receive_bytes()
-            if data:
+            message = await websocket.receive()
+            if "bytes" in message:
+                data = message["bytes"]
                 # Send audio data to DashScope
-                recognition.send_audio_frame(data)
+                if not callback.is_paused:
+                    recognition.send_audio_frame(data)
+            elif "text" in message:
+                try:
+                    text_data = json.loads(message["text"])
+                    if text_data.get("type") == "pause":
+                        callback.is_paused = True
+                        print("Recording paused")
+                    elif text_data.get("type") == "resume":
+                        callback.is_paused = False
+                        callback.last_text_time = time.time() # Reset timer on resume
+                        print("Recording resumed")
+                except json.JSONDecodeError:
+                    pass
             else:
                 break
                 

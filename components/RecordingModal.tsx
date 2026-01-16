@@ -11,7 +11,10 @@ interface RecordingModalProps {
 const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) => {
   const [isRecording, setIsRecording] = useState(false); // Start false, wait for connection
   const [duration, setDuration] = useState(0);
+  // transcript is now the full history
   const [transcript, setTranscript] = useState('');
+  // currentTranscript is the temporary incoming text
+  const [currentTranscript, setCurrentTranscript] = useState('');
   const [status, setStatus] = useState<'initializing' | 'recording' | 'error' | 'finished'>('initializing');
   
   const websocketRef = useRef<WebSocket | null>(null);
@@ -87,32 +90,15 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.text) {
-            setTranscript(prev => {
-              // Simple append for now, ideally handle is_final to update the last segment
-              // But since FunASR returns full sentence usually or partial
-              // If is_final is true, we might want to punctuate or new line
-              // For simplicity, let's just show the latest text.
-              // Actually FunASR realtime usually sends the "current sentence" updates.
-              // If we want to accumulate, we need to handle "is_final".
-              
-              // Simplified strategy: 
-              // If it's the same sentence updating, replace the end.
-              // But for this demo, let's just replace the display with what we get if it's a full stream of updates
-              // Or better: keep a history of finalized sentences + current partial.
-              
-              // Let's trust the backend sends incremental updates for current sentence.
-              // We'll store "finalized text" + "current partial".
-              return data.text; // Just showing what comes back for now
-            });
-            
-            // If we want to accumulate:
-            // if (data.is_final) {
-            //   setFinalTranscript(prev => prev + data.text);
-            //   setCurrentTranscript('');
-            // } else {
-            //   setCurrentTranscript(data.text);
-            // }
+          if (data.text !== undefined) {
+             if (data.is_final) {
+               // Sentence finished, append to history and clear current
+               setTranscript(prev => prev + data.text);
+               setCurrentTranscript('');
+             } else {
+               // Sentence in progress, update current
+               setCurrentTranscript(data.text);
+             }
           }
           if (data.error) {
             console.error('ASR Error:', data.error);
@@ -178,9 +164,10 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
 
   const handleFinish = () => {
     stopRecording();
+    const fullText = transcript + currentTranscript; // Combine both
     const newMeeting: Meeting = {
       id: Date.now().toString(),
-      title: transcript.slice(0, 10) || '新录音', // Use transcript as title
+      title: fullText.slice(0, 10) || '新录音', // Use transcript as title
       host: 'Me',
       duration: formatTime(duration),
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -217,7 +204,10 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
         <div className="mb-6">
           <div className="text-gray-400 text-xs mb-2">{formatTime(duration)}</div>
           <div className="text-lg text-gray-800 font-medium leading-relaxed whitespace-pre-wrap">
-            {transcript || (status === 'initializing' ? '正在连接语音服务...' : '请说话...')}
+            {transcript}
+            <span className="text-gray-500">{currentTranscript}</span>
+            {(!transcript && !currentTranscript && status === 'initializing') && '正在连接语音服务...'}
+            {(!transcript && !currentTranscript && status === 'recording') && '请说话...'}
             {/* 模拟光标 */}
             {isRecording && <span className="inline-block w-0.5 h-5 bg-blue-500 ml-1 align-middle animate-pulse"></span>}
           </div>

@@ -8,6 +8,39 @@ interface AIChatBarProps {
 const AIChatBar: React.FC<AIChatBarProps> = ({ className = '' }) => {
   const [isFocused, setIsFocused] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  
+  const [inputValue, setInputValue] = useState('');
+  const [response, setResponse] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSend = async () => {
+    if (!inputValue.trim()) return;
+
+    setIsLoading(true);
+    setResponse(''); // Clear previous response
+
+    try {
+      const res = await fetch('http://localhost:8000/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message: inputValue }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Network response was not ok');
+      }
+
+      const data = await res.json();
+      setResponse(data.response);
+    } catch (error) {
+      console.error('Error sending message:', error);
+      setResponse('抱歉，AI 暂时无法响应，请稍后再试。');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -59,16 +92,46 @@ const AIChatBar: React.FC<AIChatBarProps> = ({ className = '' }) => {
 
               <textarea 
                 autoFocus
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
                 placeholder="输入指令..."
                 className="w-full flex-1 bg-transparent text-sm text-gray-800 placeholder-gray-300 focus:outline-none resize-none leading-relaxed font-medium"
               />
+
+              {response && (
+                <div className="mt-4 p-3 bg-blue-50 rounded-xl text-sm text-gray-700 leading-relaxed animate-in fade-in slide-in-from-bottom-2">
+                  <div className="flex items-center gap-2 mb-1 text-xs font-bold text-blue-500 uppercase tracking-wider">
+                    <i className="fa-solid fa-sparkles"></i>
+                    AI 回答
+                  </div>
+                  {response}
+                </div>
+              )}
 
               <div className="flex items-center justify-end gap-5 mt-2">
                 <button className="text-gray-300">
                   <i className="fa-solid fa-paperclip text-lg"></i>
                 </button>
-                <button className="w-12 h-12 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 border border-gray-100 shadow-sm">
-                  <i className="fa-solid fa-microphone text-lg"></i>
+                <button 
+                  onClick={handleSend}
+                  disabled={isLoading || !inputValue.trim()}
+                  className={`w-12 h-12 rounded-full flex items-center justify-center border shadow-sm transition-all
+                    ${isLoading || !inputValue.trim() 
+                      ? 'bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed' 
+                      : 'bg-blue-500 text-white border-blue-600 hover:bg-blue-600 hover:shadow-md cursor-pointer'
+                    }`}
+                >
+                  {isLoading ? (
+                    <i className="fa-solid fa-circle-notch fa-spin text-lg"></i>
+                  ) : (
+                    <i className="fa-solid fa-paper-plane text-lg"></i>
+                  )}
                 </button>
               </div>
             </div>

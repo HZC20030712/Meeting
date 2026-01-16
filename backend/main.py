@@ -1,10 +1,12 @@
 import os
 import json
 import asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import dashscope
 from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
+import openai
 
 # Load environment variables if needed, but we have the key provided
 # from dotenv import load_dotenv
@@ -12,6 +14,12 @@ from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionRes
 
 # Use the key provided by the user
 dashscope.api_key = "sk-aa664b4c5a664cd699b0515f4dbeda7d"
+
+# Configure OpenAI client for Gemini
+client = openai.OpenAI(
+    api_key="sk-AkMYAkSiUOpnYPR1D9E20fCeA690481e80D37b245f520817",
+    base_url="https://aihubmix.com/v1"
+)
 
 app = FastAPI()
 
@@ -22,6 +30,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class ChatRequest(BaseModel):
+    message: str
+
+@app.post("/chat")
+async def chat_endpoint(request: ChatRequest):
+    try:
+        response = client.chat.completions.create(
+            model="gemini-3-flash-preview",
+            messages=[
+                {"role": "user", "content": request.message}
+            ]
+        )
+        return {"response": response.choices[0].message.content}
+    except Exception as e:
+        print(f"Chat Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 class ASRCallback(RecognitionCallback):
     def __init__(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop):
@@ -36,9 +61,7 @@ class ASRCallback(RecognitionCallback):
 
     def on_event(self, result: RecognitionResult) -> None:
         # Send the result back to the client via WebSocket
-        # result.get_sentence() contains the text
         try:
-            # print(f"DEBUG: result type: {type(result)}, result: {result}")
             sentence = result.get_sentence()
             
             # Robustly extract text
@@ -50,9 +73,22 @@ class ASRCallback(RecognitionCallback):
             else:
                 text = str(sentence)
             
+            # Robustly extract is_final
+            is_final = False
+            try:
+                # Based on previous error: "missing 1 required positional argument: 'sentence'"
+                # It seems is_sentence_end method requires the sentence object.
+                if hasattr(result, 'is_sentence_end'):
+                    is_final = result.is_sentence_end(sentence)
+            except Exception as e:
+                print(f"Error checking is_final: {e}")
+                # Fallback: check if 'is_sentence_end' is in sentence dict if it is a dict
+                if isinstance(sentence, dict):
+                     is_final = sentence.get('is_sentence_end', False)
+
             payload = {
                 "text": text,
-                # "is_final": result.is_sentence_end() # Removed due to error
+                "is_final": is_final
             }
             # Schedule the coroutine in the main event loop
             asyncio.run_coroutine_threadsafe(

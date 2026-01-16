@@ -11,9 +11,15 @@ interface RecordingModalProps {
 const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) => {
   const [isRecording, setIsRecording] = useState(false); // Start false, wait for connection
   const [duration, setDuration] = useState(0);
-  // transcript is now the full history
-  const [transcript, setTranscript] = useState('');
-  // currentTranscript is the temporary incoming text
+  
+  // Segmented Transcript State
+  interface TranscriptSegment {
+    id: string;
+    type: 'user' | 'suggestion';
+    content: string;
+    status?: 'thinking' | 'streaming' | 'done';
+  }
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [status, setStatus] = useState<'initializing' | 'recording' | 'error' | 'finished'>('initializing');
   
@@ -90,18 +96,65 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.text !== undefined) {
-             if (data.is_final) {
-               // Sentence finished, append to history and clear current
-               setTranscript(prev => prev + data.text);
-               setCurrentTranscript('');
-             } else {
-               // Sentence in progress, update current
-               setCurrentTranscript(data.text);
-             }
+          
+          // Handle Transcript
+          if (data.type === 'transcript' || (data.text !== undefined && !data.type)) {
+            if (data.is_final) {
+              // Sentence finished, append to segments
+              if (data.text && data.text.trim()) {
+                setSegments(prev => [...prev, {
+                  id: Date.now().toString(),
+                  type: 'user',
+                  content: data.text
+                }]);
+              }
+              setCurrentTranscript('');
+            } else {
+              // Sentence in progress, update current
+              setCurrentTranscript(data.text);
+            }
           }
-          if (data.error) {
-            console.error('ASR Error:', data.error);
+          // Handle Status: Thinking
+          else if (data.type === 'status' && data.content === 'thinking') {
+             // Append a new suggestion segment in 'thinking' state
+             setSegments(prev => [...prev, {
+               id: 'suggestion-' + Date.now(),
+               type: 'suggestion',
+               content: '',
+               status: 'thinking'
+             }]);
+          }
+          // Handle Suggestion Stream
+          else if (data.type === 'suggestion_delta') {
+            setSegments(prev => {
+              const newSegments = [...prev];
+              // Find the last suggestion segment
+              const lastIdx = newSegments.map(s => s.type).lastIndexOf('suggestion');
+              if (lastIdx !== -1) {
+                const last = newSegments[lastIdx];
+                newSegments[lastIdx] = {
+                  ...last,
+                  content: last.content + data.content,
+                  status: 'streaming'
+                };
+              }
+              return newSegments;
+            });
+          }
+          // Handle Suggestion End
+          else if (data.type === 'suggestion_end') {
+            setSegments(prev => {
+              const newSegments = [...prev];
+              const lastIdx = newSegments.map(s => s.type).lastIndexOf('suggestion');
+              if (lastIdx !== -1) {
+                 newSegments[lastIdx] = { ...newSegments[lastIdx], status: 'done' };
+              }
+              return newSegments;
+            });
+          }
+          
+          if (data.error || (data.type === 'error')) {
+            console.error('ASR/Gen Error:', data.error || data.content);
           }
         } catch (e) {
           console.error('WS Message Error:', e);
@@ -164,7 +217,10 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
 
   const handleFinish = () => {
     stopRecording();
-    const fullText = transcript + currentTranscript; // Combine both
+    const fullText = segments.map(s => s.type === 'user' ? s.content : '').join('') + currentTranscript; // Only keep user text for title? Or include suggestions?
+    // User probably only wants transcript content for the "meeting title" or full content.
+    // Let's stick to user content for now.
+    
     const newMeeting: Meeting = {
       id: Date.now().toString(),
       title: fullText.slice(0, 10) || '新录音', // Use transcript as title
@@ -204,10 +260,21 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
         <div className="mb-6">
           <div className="text-gray-400 text-xs mb-2">{formatTime(duration)}</div>
           <div className="text-lg text-gray-800 font-medium leading-relaxed whitespace-pre-wrap">
-            {transcript}
+            {segments.map((segment, index) => {
+              if (segment.type === 'suggestion') {
+                return (
+                  <div key={segment.id} className="my-4 p-3 bg-red-50 rounded-lg border border-red-100 animate-in fade-in slide-in-from-left-4">
+                    <span className="text-red-500 font-bold mr-2">智能提问建议：</span>
+                    <span className="text-gray-800">{segment.content}</span>
+                    {segment.status === 'thinking' && <span className="animate-pulse">...</span>}
+                  </div>
+                );
+              }
+              return <span key={segment.id}>{segment.content}</span>;
+            })}
             <span className="text-gray-500">{currentTranscript}</span>
-            {(!transcript && !currentTranscript && status === 'initializing') && '正在连接语音服务...'}
-            {(!transcript && !currentTranscript && status === 'recording') && '请说话...'}
+            {(!segments.length && !currentTranscript && status === 'initializing') && '正在连接语音服务...'}
+            {(!segments.length && !currentTranscript && status === 'recording') && '请说话...'}
             {/* 模拟光标 */}
             {isRecording && <span className="inline-block w-0.5 h-5 bg-blue-500 ml-1 align-middle animate-pulse"></span>}
           </div>

@@ -1,0 +1,5 @@
+dashscope
+fastapi
+uvicorn
+python-dotenv
+websockets

@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Meeting } from '../types';
 
 interface RecordingModalProps {
@@ -9,8 +9,155 @@ interface RecordingModalProps {
 }
 
 const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) => {
-  const [isRecording, setIsRecording] = useState(true); // Default to true as per request "direct start"
+  const [isRecording, setIsRecording] = useState(false); // Start false, wait for connection
   const [duration, setDuration] = useState(0);
+  const [transcript, setTranscript] = useState('');
+  const [status, setStatus] = useState<'initializing' | 'recording' | 'error' | 'finished'>('initializing');
+  
+  const websocketRef = useRef<WebSocket | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const inputRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  // Initialize recording on mount
+  useEffect(() => {
+    startRecording();
+    return () => {
+      stopRecording();
+    };
+  }, []);
+
+  const startRecording = async () => {
+    try {
+      setStatus('initializing');
+      
+      // 1. Connect WebSocket
+      const ws = new WebSocket('ws://localhost:8000/ws/asr');
+      websocketRef.current = ws;
+
+      ws.onopen = async () => {
+        console.log('WebSocket Connected');
+        // 2. Start Audio only after WS is ready
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          streamRef.current = stream;
+          
+          // Create AudioContext with 16k sample rate if possible
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          const audioContext = new AudioContextClass({ sampleRate: 16000 });
+          audioContextRef.current = audioContext;
+
+          const source = audioContext.createMediaStreamSource(stream);
+          inputRef.current = source;
+          
+          // Buffer size 4096 is a good balance
+          const processor = audioContext.createScriptProcessor(4096, 1, 1);
+          processorRef.current = processor;
+
+          processor.onaudioprocess = (e) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              const inputData = e.inputBuffer.getChannelData(0);
+              // Convert Float32 to Int16 PCM
+              const pcmData = new Int16Array(inputData.length);
+              for (let i = 0; i < inputData.length; i++) {
+                const s = Math.max(-1, Math.min(1, inputData[i]));
+                pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+              }
+              ws.send(pcmData.buffer);
+            }
+          };
+
+          // Create a gain node to mute the output and prevent feedback (howling)
+          const gainNode = audioContext.createGain();
+          gainNode.gain.value = 0;
+
+          source.connect(processor);
+          processor.connect(gainNode);
+          gainNode.connect(audioContext.destination);
+
+          setIsRecording(true);
+          setStatus('recording');
+        } catch (err) {
+          console.error('Audio Error:', err);
+          setStatus('error');
+        }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.text) {
+            setTranscript(prev => {
+              // Simple append for now, ideally handle is_final to update the last segment
+              // But since FunASR returns full sentence usually or partial
+              // If is_final is true, we might want to punctuate or new line
+              // For simplicity, let's just show the latest text.
+              // Actually FunASR realtime usually sends the "current sentence" updates.
+              // If we want to accumulate, we need to handle "is_final".
+              
+              // Simplified strategy: 
+              // If it's the same sentence updating, replace the end.
+              // But for this demo, let's just replace the display with what we get if it's a full stream of updates
+              // Or better: keep a history of finalized sentences + current partial.
+              
+              // Let's trust the backend sends incremental updates for current sentence.
+              // We'll store "finalized text" + "current partial".
+              return data.text; // Just showing what comes back for now
+            });
+            
+            // If we want to accumulate:
+            // if (data.is_final) {
+            //   setFinalTranscript(prev => prev + data.text);
+            //   setCurrentTranscript('');
+            // } else {
+            //   setCurrentTranscript(data.text);
+            // }
+          }
+          if (data.error) {
+            console.error('ASR Error:', data.error);
+          }
+        } catch (e) {
+          console.error('WS Message Error:', e);
+        }
+      };
+
+      ws.onerror = (e) => {
+        console.error('WebSocket Error:', e);
+        setStatus('error');
+      };
+      
+      ws.onclose = () => {
+        console.log('WebSocket Closed');
+        setIsRecording(false);
+      };
+
+    } catch (err) {
+      console.error('Setup Error:', err);
+      setStatus('error');
+    }
+  };
+
+  const stopRecording = () => {
+    setIsRecording(false);
+    
+    if (processorRef.current && inputRef.current) {
+      processorRef.current.disconnect();
+      inputRef.current.disconnect();
+    }
+    
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+    
+    if (websocketRef.current) {
+      websocketRef.current.close();
+    }
+  };
 
   // Timer effect
   React.useEffect(() => {
@@ -30,9 +177,10 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
   };
 
   const handleFinish = () => {
+    stopRecording();
     const newMeeting: Meeting = {
       id: Date.now().toString(),
-      title: '新录音',
+      title: transcript.slice(0, 10) || '新录音', // Use transcript as title
       host: 'Me',
       duration: formatTime(duration),
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -48,14 +196,16 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
       {/* 顶部导航 */}
       <div className="flex items-center justify-between px-6 py-4">
         <button 
-          onClick={onClose}
+          onClick={() => { stopRecording(); onClose(); }}
           className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-gray-600 hover:bg-gray-100 transition-colors"
         >
           <i className="fa-solid fa-compress text-sm"></i>
         </button>
         <div className="flex items-center gap-2">
-          <span className="text-base font-bold text-gray-900">新录音</span>
-          <i className="fa-solid fa-pen text-gray-400 text-xs"></i>
+          <span className="text-base font-bold text-gray-900">
+            {status === 'initializing' ? '连接中...' : status === 'recording' ? '正在录音' : '录音停止'}
+          </span>
+          {status === 'recording' && <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>}
         </div>
         <button className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-gray-600">
           <i className="fa-solid fa-gear text-sm"></i>
@@ -66,10 +216,10 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
       <div className="flex-1 px-8 py-4 overflow-y-auto">
         <div className="mb-6">
           <div className="text-gray-400 text-xs mb-2">{formatTime(duration)}</div>
-          <div className="text-lg text-gray-800 font-medium leading-relaxed">
-            嗯还是数据ok
+          <div className="text-lg text-gray-800 font-medium leading-relaxed whitespace-pre-wrap">
+            {transcript || (status === 'initializing' ? '正在连接语音服务...' : '请说话...')}
             {/* 模拟光标 */}
-            <span className="inline-block w-0.5 h-5 bg-blue-500 ml-1 align-middle animate-pulse"></span>
+            {isRecording && <span className="inline-block w-0.5 h-5 bg-blue-500 ml-1 align-middle animate-pulse"></span>}
           </div>
         </div>
       </div>
@@ -78,20 +228,19 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess }) =
       <div className="px-8 pb-10 pt-4 bg-gradient-to-t from-white via-white to-transparent rounded-b-[32px]">
         {/* 进度条 */}
         <div className="flex items-center justify-center gap-4 mb-12">
-          <div className="flex items-end gap-1 h-8">
-            <div className="w-1 bg-red-400 h-3 rounded-full animate-[bounce_1s_infinite]"></div>
+          <div className="flex items-end gap-1 h-8 opacity-50">
+            {/* Simple Visualizer Placeholder */}
+             <div className="w-1 bg-red-400 h-3 rounded-full animate-[bounce_1s_infinite]"></div>
             <div className="w-1 bg-red-400 h-5 rounded-full animate-[bounce_1.2s_infinite]"></div>
-            <div className="w-1 bg-red-400 h-8 rounded-full animate-[bounce_0.8s_infinite]"></div>
-            <div className="w-1 bg-red-400 h-4 rounded-full animate-[bounce_1.1s_infinite]"></div>
+             <div className="w-1 bg-red-400 h-4 rounded-full animate-[bounce_1.1s_infinite]"></div>
           </div>
           <span className="text-lg font-mono text-gray-600 min-w-[100px] text-center">
             {formatTime(duration)} / 60:00
           </span>
-          <div className="flex items-end gap-1 h-8">
+          <div className="flex items-end gap-1 h-8 opacity-50">
             <div className="w-1 bg-red-400 h-4 rounded-full animate-[bounce_1.1s_infinite]"></div>
-            <div className="w-1 bg-red-400 h-8 rounded-full animate-[bounce_0.8s_infinite]"></div>
             <div className="w-1 bg-red-400 h-5 rounded-full animate-[bounce_1.2s_infinite]"></div>
-            <div className="w-1 bg-red-400 h-3 rounded-full animate-[bounce_1s_infinite]"></div>
+             <div className="w-1 bg-red-400 h-3 rounded-full animate-[bounce_1s_infinite]"></div>
           </div>
         </div>
 

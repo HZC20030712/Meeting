@@ -1,0 +1,31 @@
+
+export interface Meeting {
+  id: string;
+  title: string;
+  host: string;
+  duration: string;
+  time: string;
+  date: string;
+  type: 'strategy' | 'product' | 'recruitment' | 'interview' | 'other';
+}
+
+export interface PersonaCapsule {
+  id: string;
+  label: string;
+  icon: string;
+  color: string;
+}
+
+export interface Folder {
+  id: string;
+  name: string;
+  itemCount: number;
+  color: string;
+}
+
+export enum AppTab {
+  RECENT = 'recent',
+  SHARED = 'shared',
+  FOLDERS = 'folders',
+  SOCIAL = 'social'
+}

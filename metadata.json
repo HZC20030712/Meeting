@@ -1,0 +1,7 @@
+{
+  "name": "MeetingAI - AI 会议纪要助手",
+  "description": "一款功能强大的 AI 驱动会议助手，用于录制、总结和查询会议智能，采用优雅的移动优先设计。",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

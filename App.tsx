@@ -1,0 +1,165 @@
+
+import React, { useState } from 'react';
+import Header from './components/Header';
+import Sidebar from './components/Sidebar';
+import MeetingList from './components/MeetingList';
+import PersonaCapsules from './components/PersonaCapsules';
+import FolderGrid from './components/FolderGrid';
+import RecordingModal from './components/RecordingModal';
+import AIChatBar from './components/AIChatBar';
+import { AppTab, Meeting } from './types';
+
+const INITIAL_MOCK_MEETINGS: Meeting[] = [
+  {
+    id: '1',
+    title: 'Granola 入门指南',
+    host: 'Sam Stephenson',
+    duration: '3:15',
+    time: '14:20',
+    date: '昨天',
+    type: 'product'
+  },
+  {
+    id: '2',
+    title: '每周产品同步会议',
+    host: 'Jane Cooper',
+    duration: '45:00',
+    time: '10:00',
+    date: '昨天',
+    type: 'strategy'
+  },
+  {
+    id: '3',
+    title: '前端工程师候选人面试',
+    host: 'Alex Wong',
+    duration: '22:12',
+    time: '16:00',
+    date: '10月24日',
+    type: 'interview'
+  }
+];
+
+const App: React.FC = () => {
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<AppTab>(AppTab.RECENT);
+  const [meetings, setMeetings] = useState<Meeting[]>(INITIAL_MOCK_MEETINGS);
+  // 默认为左侧模式，但在小屏幕下初始化为底部模式，之后由用户手动控制
+  const [isBottomMode, setIsBottomMode] = useState(() => window.innerWidth < 768);
+
+  // 移除自动 resize 监听，改为手动触发
+  // 只在组件挂载时进行一次初始化检查（上面的 useState 已经做了）
+
+  const toggleLayoutMode = () => {
+    setIsBottomMode(prev => !prev);
+    // 切换到底部模式时，确保 sidebar 是打开的
+    if (!isBottomMode) {
+      setIsSidebarOpen(true);
+    }
+  };
+
+  const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
+
+  const addNewMeeting = (meeting: Meeting) => {
+    setMeetings([meeting, ...meetings]);
+  };
+
+  const getPageTitle = () => {
+    switch (activeTab) {
+      case AppTab.RECENT: return '近期看板';
+      case AppTab.SHARED: return '团队共享';
+      case AppTab.FOLDERS: return '会议时间树';
+      case AppTab.SOCIAL: return '社交关系';
+      default: return '近期看板';
+    }
+  };
+
+  const getPageDescription = () => {
+    switch (activeTab) {
+      case AppTab.RECENT: return `共 ${meetings.length} 个正在处理的项目`;
+      case AppTab.FOLDERS: return '按时间维度浏览您的会议沉淀';
+      case AppTab.SOCIAL: return '分析会议中的人际脉络与互动';
+      default: return '管理您的工作流';
+    }
+  };
+
+  return (
+    <div className="flex h-screen w-full overflow-hidden bg-[#ffffff] text-[#1A1A1A]">
+      <Sidebar 
+        isOpen={isSidebarOpen || isBottomMode} 
+        onClose={() => setIsSidebarOpen(false)} 
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        position={isBottomMode ? 'bottom' : 'left'}
+        onToggleLayout={toggleLayoutMode}
+        onAddClick={() => setIsRecordingModalOpen(true)}
+      />
+
+      <main className={`relative flex flex-col flex-1 h-full min-w-0 bg-[#F8F9FB] transition-all duration-300 ${isBottomMode ? 'pb-[80px]' : ''}`}>
+        <Header onOpenSidebar={toggleSidebar} isBottomMode={isBottomMode} />
+
+        <div className="flex-1 overflow-y-auto px-6 pb-40 pt-6 no-scrollbar">
+          {activeTab !== AppTab.FOLDERS && activeTab !== AppTab.SOCIAL && (
+            <section className="mb-12">
+              <div className="flex items-center gap-3 mb-5 px-1">
+                <div className="w-1 h-4 rounded-full bg-gradient-to-b from-[#7bbfea] to-[#33a3dc]"></div>
+                <h2 className="text-[11px] font-black text-[#999999] uppercase tracking-[0.25em]">AI 智能建模</h2>
+              </div>
+              <PersonaCapsules />
+            </section>
+          )}
+
+          <section className="max-w-5xl mx-auto md:mx-0">
+            <div className="flex items-center justify-between mb-8 px-1">
+              <div className="flex flex-col">
+                <h2 className="text-2xl font-black text-[#1A1A1A] tracking-tighter">
+                  {getPageTitle()}
+                </h2>
+                <span className="text-[10px] text-[#BBBBBB] font-bold mt-1 uppercase tracking-widest">
+                  {getPageDescription()}
+                </span>
+              </div>
+              <button 
+                onClick={() => setIsRecordingModalOpen(true)}
+                className="group relative px-6 py-2.5 rounded-full bg-white border border-[#EEEEEE] shadow-sm hover:shadow-md transition-all active:scale-95"
+              >
+                <div className="relative flex items-center gap-2 text-sm font-bold text-[#33a3dc]">
+                  <i className="fa-solid fa-plus text-[10px]"></i>
+                  <span>快速新建</span>
+                </div>
+              </button>
+            </div>
+            
+            {activeTab === AppTab.FOLDERS ? (
+              <FolderGrid />
+            ) : activeTab === AppTab.SOCIAL ? (
+              <div className="bg-white border border-gray-100 rounded-3xl p-12 text-center flex flex-col items-center justify-center animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="w-20 h-20 bg-[#F0F9FF] rounded-full flex items-center justify-center text-[#33a3dc] mb-6">
+                  <i className="fa-solid fa-users-viewfinder text-3xl"></i>
+                </div>
+                <h3 className="text-xl font-black text-gray-900 mb-2">社交网络分析正在准备中</h3>
+                <p className="text-sm text-gray-500 max-w-sm">基于会议对话，自动提取关键决策者、跨部门连接点，助您洞察项目背后的影响力地图。</p>
+              </div>
+            ) : (
+              <MeetingList meetings={meetings} />
+            )}
+          </section>
+        </div>
+
+        <AIChatBar className={`transition-all duration-300 ${isBottomMode ? 'bottom-[70px]' : 'bottom-0'}`} />
+
+        {isRecordingModalOpen && (
+          <>
+            <div className="fixed inset-0 bg-black/20 z-50 backdrop-blur-[2px] animate-in fade-in duration-300" onClick={() => setIsRecordingModalOpen(false)} />
+            <RecordingModal 
+              onClose={() => setIsRecordingModalOpen(false)} 
+              onSuccess={addNewMeeting}
+            />
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+export default App;

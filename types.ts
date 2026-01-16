@@ -4,9 +4,14 @@ export interface Meeting {
   title: string;
   host: string;
   duration: string;
+  durationSeconds?: number;
   time: string;
   date: string;
   type: 'strategy' | 'product' | 'recruitment' | 'interview' | 'other';
+  segments?: TranscriptSegment[];
+  summary?: string;
+  keywords?: string[];
+  audioUrl?: string;
 }
 
 export interface PersonaCapsule {
@@ -35,4 +40,7 @@ export interface TranscriptSegment {
   type: 'user' | 'suggestion';
   content: string;
   status?: 'thinking' | 'streaming' | 'done';
+  startTime?: string;
+  endTime?: string;
+  speaker?: string;
 }

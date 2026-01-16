@@ -51,9 +51,16 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess, rec
       title: fullText.slice(0, 10) || '新录音',
       host: 'Me',
       duration: formatTime(duration),
+      durationSeconds: duration,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       date: '刚刚',
-      type: 'other'
+      type: 'other',
+      segments: [...segments, ...(currentTranscript ? [{
+        id: 'final-pending',
+        type: 'user' as const,
+        content: currentTranscript,
+        startTime: formatTime(duration)
+      }] : [])]
     };
     onSuccess(newMeeting);
     resetRecording();

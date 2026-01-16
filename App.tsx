@@ -7,6 +7,7 @@ import PersonaCapsules from './components/PersonaCapsules';
 import FolderGrid from './components/FolderGrid';
 import RecordingModal from './components/RecordingModal';
 import AIChatBar from './components/AIChatBar';
+import MeetingDetail from './components/MeetingDetail';
 import { AppTab, Meeting, Folder } from './types';
 import { useRecording } from './hooks/useRecording';
 
@@ -45,6 +46,7 @@ const App: React.FC = () => {
   const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<AppTab>(AppTab.RECENT);
   const [meetings, setMeetings] = useState<Meeting[]>(INITIAL_MOCK_MEETINGS);
+  const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   // 默认为左侧模式，但在小屏幕下初始化为底部模式，之后由用户手动控制
   const [isBottomMode, setIsBottomMode] = useState(() => window.innerWidth < 768);
   
@@ -65,6 +67,7 @@ const App: React.FC = () => {
 
   const addNewMeeting = (meeting: Meeting) => {
     setMeetings([meeting, ...meetings]);
+    setSelectedMeeting(meeting);
   };
 
   const getPageTitle = () => {
@@ -105,57 +108,66 @@ const App: React.FC = () => {
       />
 
       <main className={`relative flex flex-col flex-1 h-full min-w-0 bg-[#F8F9FB] transition-all duration-300 ${isBottomMode ? 'pb-[80px]' : ''}`}>
-        <Header onOpenSidebar={toggleSidebar} isBottomMode={isBottomMode} />
+        {selectedMeeting ? (
+          <MeetingDetail 
+            meeting={selectedMeeting} 
+            onBack={() => setSelectedMeeting(null)} 
+          />
+        ) : (
+          <>
+            <Header onOpenSidebar={toggleSidebar} isBottomMode={isBottomMode} />
 
-        <div className="flex-1 overflow-y-auto px-6 pb-40 pt-6 no-scrollbar">
-          {activeTab !== AppTab.FOLDERS && activeTab !== AppTab.SOCIAL && (
-            <section className="mb-12">
-              <div className="flex items-center gap-3 mb-5 px-1">
-                <div className="w-1 h-4 rounded-full bg-gradient-to-b from-[#7bbfea] to-[#33a3dc]"></div>
-                <h2 className="text-[11px] font-black text-[#999999] uppercase tracking-[0.25em]">AI 智能建模</h2>
-              </div>
-              <PersonaCapsules />
-            </section>
-          )}
+            <div className="flex-1 overflow-y-auto px-6 pb-40 pt-6 no-scrollbar">
+              {activeTab !== AppTab.FOLDERS && activeTab !== AppTab.SOCIAL && (
+                <section className="mb-12">
+                  <div className="flex items-center gap-3 mb-5 px-1">
+                    <div className="w-1 h-4 rounded-full bg-gradient-to-b from-[#7bbfea] to-[#33a3dc]"></div>
+                    <h2 className="text-[11px] font-black text-[#999999] uppercase tracking-[0.25em]">AI 智能建模</h2>
+                  </div>
+                  <PersonaCapsules />
+                </section>
+              )}
 
-          <section className="max-w-5xl mx-auto md:mx-0">
-            <div className="flex items-center justify-between mb-8 px-1">
-              <div className="flex flex-col">
-                <h2 className="text-2xl font-black text-[#1A1A1A] tracking-tighter">
-                  {getPageTitle()}
-                </h2>
-                <span className="text-[10px] text-[#BBBBBB] font-bold mt-1 uppercase tracking-widest">
-                  {getPageDescription()}
-                </span>
-              </div>
-              <button 
-                onClick={() => setIsRecordingModalOpen(true)}
-                className="group relative px-6 py-2.5 rounded-full bg-white border border-[#EEEEEE] shadow-sm hover:shadow-md transition-all active:scale-95"
-              >
-                <div className="relative flex items-center gap-2 text-sm font-bold text-[#33a3dc]">
-                  <i className="fa-solid fa-plus text-[10px]"></i>
-                  <span>快速新建</span>
+              <section className="max-w-5xl mx-auto md:mx-0">
+                <div className="flex items-center justify-between mb-8 px-1">
+                  <div className="flex flex-col">
+                    <h2 className="text-2xl font-black text-[#1A1A1A] tracking-tighter">
+                      {getPageTitle()}
+                    </h2>
+                    <span className="text-[10px] text-[#BBBBBB] font-bold mt-1 uppercase tracking-widest">
+                      {getPageDescription()}
+                    </span>
+                  </div>
+                  <button 
+                    onClick={() => setIsRecordingModalOpen(true)}
+                    className="group relative px-6 py-2.5 rounded-full bg-white border border-[#EEEEEE] shadow-sm hover:shadow-md transition-all active:scale-95"
+                  >
+                    <div className="relative flex items-center gap-2 text-sm font-bold text-[#33a3dc]">
+                      <i className="fa-solid fa-plus text-[10px]"></i>
+                      <span>快速新建</span>
+                    </div>
+                  </button>
                 </div>
-              </button>
+                
+                {activeTab === AppTab.FOLDERS ? (
+                  <FolderGrid />
+                ) : activeTab === AppTab.SOCIAL ? (
+                  <div className="bg-white border border-gray-100 rounded-3xl p-12 text-center flex flex-col items-center justify-center animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <div className="w-20 h-20 bg-[#F0F9FF] rounded-full flex items-center justify-center text-[#33a3dc] mb-6">
+                      <i className="fa-solid fa-users-viewfinder text-3xl"></i>
+                    </div>
+                    <h3 className="text-xl font-black text-gray-900 mb-2">社交网络分析正在准备中</h3>
+                    <p className="text-sm text-gray-500 max-w-sm">基于会议对话，自动提取关键决策者、跨部门连接点，助您洞察项目背后的影响力地图。</p>
+                  </div>
+                ) : (
+                  <MeetingList meetings={meetings} onMeetingClick={setSelectedMeeting} />
+                )}
+              </section>
             </div>
-            
-            {activeTab === AppTab.FOLDERS ? (
-              <FolderGrid />
-            ) : activeTab === AppTab.SOCIAL ? (
-              <div className="bg-white border border-gray-100 rounded-3xl p-12 text-center flex flex-col items-center justify-center animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="w-20 h-20 bg-[#F0F9FF] rounded-full flex items-center justify-center text-[#33a3dc] mb-6">
-                  <i className="fa-solid fa-users-viewfinder text-3xl"></i>
-                </div>
-                <h3 className="text-xl font-black text-gray-900 mb-2">社交网络分析正在准备中</h3>
-                <p className="text-sm text-gray-500 max-w-sm">基于会议对话，自动提取关键决策者、跨部门连接点，助您洞察项目背后的影响力地图。</p>
-              </div>
-            ) : (
-              <MeetingList meetings={meetings} />
-            )}
-          </section>
-        </div>
 
-        <AIChatBar className={`transition-all duration-300 ${isBottomMode ? 'bottom-[70px]' : 'bottom-0'}`} />
+            <AIChatBar className={`transition-all duration-300 ${isBottomMode ? 'bottom-[70px]' : 'bottom-0'}`} />
+          </>
+        )}
 
         {isRecordingModalOpen && (
           <>

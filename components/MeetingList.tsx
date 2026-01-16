@@ -4,9 +4,10 @@ import { Meeting } from '../types';
 
 interface MeetingListProps {
   meetings: Meeting[];
+  onMeetingClick?: (meeting: Meeting) => void;
 }
 
-const MeetingList: React.FC<MeetingListProps> = ({ meetings }) => {
+const MeetingList: React.FC<MeetingListProps> = ({ meetings, onMeetingClick }) => {
   // Group meetings by date for sectioning
   const groups = meetings.reduce((acc, meeting) => {
     if (!acc[meeting.date]) acc[meeting.date] = [];
@@ -36,6 +37,7 @@ const MeetingList: React.FC<MeetingListProps> = ({ meetings }) => {
             {(groups[date] as Meeting[]).map((meeting) => (
               <div 
                 key={meeting.id}
+                onClick={() => onMeetingClick && onMeetingClick(meeting)}
                 className={`
                   group bg-white hover:bg-gray-50 border border-gray-100 rounded-2xl p-5 transition-all active:scale-[0.99] flex items-center gap-5 shadow-sm hover:shadow-xl hover:shadow-gray-200/40 cursor-pointer
                   ${date === '刚刚' ? 'ring-2 ring-[#33a3dc]/20 bg-blue-50/10 border-[#33a3dc]/20' : ''}

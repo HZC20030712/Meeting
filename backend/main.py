@@ -8,6 +8,7 @@ import threading
 import hashlib
 import shutil
 import subprocess
+import wave
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -68,7 +69,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
 # --- Database Setup (SQLite + SQLAlchemy) ---
 # Create a local SQLite database file
-SQLALCHEMY_DATABASE_URL = "sqlite:///./meetings.db"
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'meetings.db')}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
@@ -89,6 +90,8 @@ class Meeting(Base):
     file_url = Column(String) # OSS URL
     created_at = Column(DateTime, default=datetime.now)
     type = Column(String, default="product") # meeting type
+    analysis_result = Column(Text, nullable=True) # JSON string for analysis result
+    chapters = Column(Text, nullable=True) # JSON string for smart chapters
 
     # Relationship to segments
     segments = relationship("Segment", back_populates="meeting", cascade="all, delete-orphan")
@@ -342,8 +345,112 @@ def get_meeting_detail(meeting_id: int, db: Session = Depends(get_db)):
         "id": str(meeting.id),
         "title": meeting.title,
         "segments": segments,
-        "file_url": meeting.file_url
+        "file_url": meeting.file_url,
+        "analysis_result": json.loads(meeting.analysis_result) if meeting.analysis_result else None,
+        "chapters": json.loads(meeting.chapters) if meeting.chapters else None
     }
+
+class AnalysisRequest(BaseModel):
+    speaker_map: dict[str, str] = {}
+    ignored_speakers: list[str] = []
+    preset_id: str
+    custom_requirement: str = ""
+
+@app.get("/api/presets")
+def get_presets():
+    try:
+        preset_path = os.path.join(os.path.dirname(__file__), "presets.json")
+        if not os.path.exists(preset_path):
+             return []
+        with open(preset_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load presets: {e}")
+        return []
+
+def load_prompt_file(filename: str) -> str:
+    try:
+        path = os.path.join(os.path.dirname(__file__), "prompts", filename)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
+    except Exception as e:
+        logger.error(f"Error loading prompt file {filename}: {e}")
+        return ""
+
+@app.post("/api/meetings/{meeting_id}/analysis")
+async def analyze_meeting(meeting_id: int, request: AnalysisRequest, db: Session = Depends(get_db)):
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    
+    # 1. Load Preset and Modular Prompts
+    presets = get_presets()
+    preset = next((p for p in presets if p["id"] == request.preset_id), None)
+    if not preset:
+        raise HTTPException(status_code=400, detail="Invalid preset_id")
+    
+    base_prompt = load_prompt_file("base.txt")
+    skill_prompt = load_prompt_file(preset["skill_file"])
+    
+    # 2. Build Context
+    transcript_text = ""
+    for seg in meeting.segments:
+        # Check ignore
+        if seg.speaker in request.ignored_speakers:
+            continue
+            
+        # Map Name
+        display_name = request.speaker_map.get(seg.speaker, seg.speaker)
+        
+        # Format: [00:12] Speaker ID (Name): Content
+        transcript_text += f"[{seg.start_time}] {seg.speaker} ({display_name}): {seg.content}\n"
+    
+    # 3. Build Final Prompt
+    system_prompt = f"{base_prompt}\n\n---\n你的具体任务是：\n{skill_prompt}"
+    if request.custom_requirement:
+        system_prompt += f"\n\n---\n额外用户要求：\n{request.custom_requirement}"
+        
+    user_prompt = f"会议录音文本如下：\n{transcript_text}"
+    
+    # 4. Call Gemini (via OpenAI compatible client)
+    try:
+        # Using the existing 'client' which is configured for Gemini
+        response = client.chat.completions.create(
+            model="gemini-3-flash-preview", 
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            # response_format={"type": "json_object"} # Ensure JSON output
+        )
+        
+        content = response.choices[0].message.content
+        # Clean markdown code blocks if present (Gemini sometimes adds them even if asked not to)
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+            
+        # Validate JSON
+        try:
+            analysis_data = json.loads(content)
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON from Gemini: {content}")
+            raise HTTPException(status_code=500, detail="Analysis generation failed (Invalid JSON)")
+
+        # 5. Save Result
+        meeting.analysis_result = json.dumps(analysis_data, ensure_ascii=False)
+        db.commit()
+        
+        return {"status": "success", "result": analysis_data}
+        
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/asr/file")
 async def file_transcribe(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -492,16 +599,137 @@ def _ms_to_mmss(ms: int | None) -> str | None:
     s = seconds % 60
     return f"{m:02d}:{s:02d}"
 
+def process_realtime_recording(meeting_id: int, file_path: str):
+    """
+    Post-process the realtime recording:
+    1. Convert to mono & Upload to OSS
+    2. Update Meeting file_url
+    3. Run offline FunASR (with diarization)
+    4. Replace crude realtime segments with high-quality offline segments
+    """
+    logger.info(f"Starting post-processing for meeting {meeting_id}, file: {file_path}")
+    
+    if not os.path.exists(file_path):
+        logger.error(f"File not found: {file_path}")
+        return
+
+    db = SessionLocal()
+    try:
+        # 1. Standardize & Hash
+        file_hash = calculate_file_hash_from_file(file_path)
+        mono_path = ensure_mono_wav(file_path, file_hash)
+        
+        # 2. Upload to OSS
+        filename = f"realtime_{meeting_id}.wav"
+        oss_url = upload_to_oss(mono_path, filename, file_hash)
+        
+        # Update Meeting URL immediately
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+        if meeting:
+            meeting.file_url = oss_url
+            db.commit()
+            logger.info(f"Updated meeting {meeting_id} file_url: {oss_url}")
+        else:
+            logger.error(f"Meeting {meeting_id} not found during post-processing")
+            return
+        
+        # 3. Offline Transcription (FunASR) with Diarization
+        logger.info(f"Triggering offline transcription for meeting {meeting_id}")
+        output = transcribe_with_fun_asr(oss_url)
+        task_id = output.task_id
+        
+        # 4. Parse Result (Reuse logic)
+        transcription_url = None
+        results = output.get("results")
+        if results and len(results) > 0:
+            first_res = results[0]
+            transcription_url = first_res.get("transcription_url")
+        
+        transcription_payload = None
+        if transcription_url:
+            logger.info(f"Fetching transcription json: {_safe_url(transcription_url)}")
+            r = requests.get(transcription_url, timeout=30); r.raise_for_status()
+            transcription_payload = r.json()
+        elif results:
+            transcription_payload = {"results": results}
+        else:
+             transcription_payload = output
+            
+        sentences = _extract_sentences_from_transcription_payload(transcription_payload or {})
+        
+        if not sentences:
+             logger.warning(f"No sentences found in offline transcription for meeting {meeting_id}")
+             return
+
+        # 5. Replace Segments
+        # Delete old realtime segments
+        db.query(Segment).filter(Segment.meeting_id == meeting_id).delete()
+        
+        # Insert new segments
+        new_segments = []
+        for sent in sentences:
+            start = _ms_to_mmss(sent.get("begin_time"))
+            end = _ms_to_mmss(sent.get("end_time"))
+            
+            spk_id = sent.get("speaker_id")
+            if spk_id is None: spk_id = sent.get("speaker")
+            
+            speaker = f"Speaker {spk_id}" if spk_id is not None else "未知发言人"
+            
+            seg = Segment(
+                meeting_id=meeting_id,
+                content=sent.get("text", ""),
+                speaker=speaker,
+                start_time=start,
+                end_time=end,
+                emotion=sent.get("emotion_tag")
+            )
+            new_segments.append(seg)
+            
+        db.add_all(new_segments)
+        
+        # Update duration again with precise time
+        last_end = sentences[-1].get("end_time")
+        duration_str = _ms_to_mmss(last_end) or "00:00"
+        meeting.duration = duration_str
+        
+        db.commit()
+        logger.info(f"Successfully re-processed meeting {meeting_id} with offline model ({len(new_segments)} segments)")
+        
+    except Exception as e:
+        logger.error(f"Post-processing failed for meeting {meeting_id}: {e}")
+        db.rollback()
+    finally:
+        db.close()
+        # Optional: Clean up temp file? 
+        # os.remove(file_path) 
+
+
 # --- Qwen3 Realtime ASR (WebSocket) ---
 
 class QwenRealtimeClient:
-    def __init__(self, frontend_ws: WebSocket, loop: asyncio.AbstractEventLoop):
+    def __init__(self, frontend_ws: WebSocket, loop: asyncio.AbstractEventLoop, meeting_id: int = None):
         self.frontend_ws = frontend_ws
         self.loop = loop
         self.ws = None
         self.is_connected = False
         self.thread = None
+        self.meeting_id = meeting_id
+        self.start_timestamp = time.time()
         
+        # Audio Recording
+        self.audio_filename = f"temp_{self.meeting_id}.wav" if self.meeting_id else f"temp_unknown_{uuid.uuid4().hex}.wav"
+        self.audio_path = os.path.join(UPLOAD_DIR, self.audio_filename)
+        self.wave_file = None
+        try:
+            self.wave_file = wave.open(self.audio_path, 'wb')
+            self.wave_file.setnchannels(1) # Assuming Mono
+            self.wave_file.setsampwidth(2) # Assuming 16-bit PCM
+            self.wave_file.setframerate(16000)
+            logger.info(f"Recording audio to {self.audio_path}")
+        except Exception as e:
+            logger.error(f"Failed to create audio file: {e}")
+
         # Buffer for suggestions
         self.context_buffer = deque()
         self.last_text_time = time.time()
@@ -543,14 +771,55 @@ class QwenRealtimeClient:
         }
         ws.send(json.dumps(session_event))
 
+    def _save_segment_to_db(self, text: str):
+        if not self.meeting_id or not text.strip():
+            return
+            
+        try:
+            # Calculate relative time
+            now = time.time()
+            elapsed_ms = (now - self.start_timestamp) * 1000
+            # A rough estimate: assume this sentence ended now, and started 2s ago or just use same start/end
+            # Better: use last_text_time as start, now as end
+            start_ms = (self.last_text_time - self.start_timestamp) * 1000
+            if start_ms < 0: start_ms = 0
+            
+            start_str = _ms_to_mmss(start_ms)
+            end_str = _ms_to_mmss(elapsed_ms)
+            
+            db = SessionLocal()
+            try:
+                # 1. Save Segment
+                seg = Segment(
+                    meeting_id=self.meeting_id,
+                    content=text,
+                    speaker="Speaker", # Realtime doesn't provide speaker ID yet
+                    start_time=start_str,
+                    end_time=end_str,
+                    emotion=None
+                )
+                db.add(seg)
+                
+                # 2. Update Meeting Duration
+                meeting = db.query(Meeting).filter(Meeting.id == self.meeting_id).first()
+                if meeting:
+                    meeting.duration = end_str
+                    
+                db.commit()
+            except Exception as e:
+                logger.error(f"Failed to save segment to DB: {e}")
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"Error in _save_segment_to_db wrapper: {e}")
+
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
             # logger.debug(f"[QwenWS] Recv: {data}")
             
             # Handle transcription events
-            # Note: Actual event names depend on Qwen Realtime protocol (similar to OpenAI Realtime)
-            # Adjust these based on actual response structure
             if data.get("type") == "response.audio_transcript.delta":
                  text = data.get("delta", "")
                  self._send_to_frontend(text, is_final=False)
@@ -559,6 +828,10 @@ class QwenRealtimeClient:
                  self._send_to_frontend(text, is_final=True)
                  if text.strip():
                      self.context_buffer.append((time.time(), text))
+                     
+                     # Save to DB
+                     self._save_segment_to_db(text)
+                     
                      self.last_text_time = time.time()
                      self.suggestion_generated = False
             
@@ -578,6 +851,13 @@ class QwenRealtimeClient:
     def send_audio(self, audio_bytes: bytes):
         if not self.is_connected: return
         
+        # Write to local WAV file
+        if self.wave_file:
+            try:
+                self.wave_file.writeframes(audio_bytes)
+            except Exception as e:
+                logger.error(f"Error writing to wave file: {e}")
+
         # Encode audio to base64
         encoded = base64.b64encode(audio_bytes).decode("utf-8")
         event = {
@@ -590,6 +870,15 @@ class QwenRealtimeClient:
         if self.ws:
             self.ws.close()
         self.is_connected = False
+        
+        # Close wave file
+        if self.wave_file:
+            try:
+                self.wave_file.close()
+                logger.info(f"Audio recording saved: {self.audio_path}")
+            except Exception as e:
+                logger.error(f"Error closing wave file: {e}")
+            self.wave_file = None
 
     def _send_to_frontend(self, text: str, is_final: bool):
         payload = {
@@ -666,8 +955,30 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     loop = asyncio.get_running_loop()
     
+    # Create Meeting Record for Persistence
+    meeting_id = None
+    try:
+        db = SessionLocal()
+        now = datetime.now()
+        new_meeting = Meeting(
+            title=f"实时会议 {now.strftime('%Y-%m-%d %H:%M')}",
+            date=now.strftime("%Y-%m-%d"),
+            time=now.strftime("%H:%M"),
+            duration="00:00",
+            type="realtime",
+            file_url="" # No file for realtime yet
+        )
+        db.add(new_meeting)
+        db.commit()
+        db.refresh(new_meeting)
+        meeting_id = new_meeting.id
+        logger.info(f"Created Realtime Meeting: {meeting_id}")
+        db.close()
+    except Exception as e:
+        logger.error(f"Failed to create meeting record: {e}")
+    
     # Init Qwen Client
-    qwen_client = QwenRealtimeClient(websocket, loop)
+    qwen_client = QwenRealtimeClient(websocket, loop, meeting_id=meeting_id)
     qwen_client.connect()
     
     # Start Monitor
@@ -698,6 +1009,12 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         qwen_client.close()
         monitor_task.cancel()
+        
+        # Trigger post-processing
+        if qwen_client.meeting_id and os.path.exists(qwen_client.audio_path):
+            logger.info(f"Scheduling post-processing for meeting {qwen_client.meeting_id}")
+            # Run in thread pool to avoid blocking event loop
+            loop.run_in_executor(None, process_realtime_recording, qwen_client.meeting_id, qwen_client.audio_path)
 
 @app.get("/")
 def read_root():

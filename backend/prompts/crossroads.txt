@@ -1,0 +1,19 @@
+请识别会议中的“关键转折点”或“博弈节点”。
+找出那些如果换一种说法，结果可能截然不同的时刻。
+
+请按以下 JSON Schema 输出：
+
+{
+  "mode": "crossroads",
+  "decision_points": [
+    {
+      "timestamp": "HH:MM:SS",
+      "context": "当时的语境描述",
+      "actual_move": "用户实际说了什么（如：'同意了对方的延期要求'）",
+      "actual_outcome": "导致的后果（如：'项目进度失控'）",
+      "alternative_move": "AI建议的更优话术（如：'坚持原定日期，但提供资源支持'）",
+      "simulated_outcome": "推演的更好结果（如：'对方虽然不满，但保证了交付'）",
+      "game_theory_analysis": "博弈论视角的简评（如：'这是一个零和博弈点，你过早放弃了筹码'）"
+    }
+  ]
+}

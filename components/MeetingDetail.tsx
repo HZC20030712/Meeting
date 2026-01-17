@@ -1,13 +1,17 @@
 
 import React, { useState } from 'react';
-import { Meeting, TranscriptSegment } from '../types';
+import DeepAnalysisConfigModal from './DeepAnalysisConfigModal';
+import DeepAnalysisList from './DeepAnalysisList';
+import PersonaHeader from './PersonaHeader';
+import SmartChapters from './SmartChapters';
+import { Meeting, TranscriptSegment, AnalysisResult, ChaptersResult, DeepInsightResult } from '../types';
 
 interface MeetingDetailProps {
   meeting: Meeting;
   onBack: () => void;
 }
 
-type TabType = 'guide' | 'mindmap' | 'notes';
+type TabType = 'guide' | 'mindmap' | 'notes' | 'analysis';
 
 const SpeakerTag: React.FC<{
   speakerId: string | undefined;
@@ -113,6 +117,10 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>(meeting.speakerMap || {});
+  const [isAnalysisModalOpen, setIsAnalysisModalOpen] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(meeting.analysisResult || null);
+  const [chaptersResult, setChaptersResult] = useState<ChaptersResult | null>(meeting.chapters || null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   
   // Use local state for segments to allow local edits
   const [localSegments, setLocalSegments] = useState<TranscriptSegment[]>(
@@ -223,6 +231,42 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
     }
   };
 
+  const handleStartAnalysis = async (config: any) => {
+    setIsAnalysisModalOpen(false);
+    setIsAnalyzing(true);
+    setActiveTab('analysis');
+    
+    // Update local speaker map first if changed
+    setSpeakerMap(prev => ({ ...prev, ...config.speaker_map }));
+    
+    try {
+        const res = await fetch(`http://localhost:8000/api/meetings/${meeting.id}/analysis`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            if (config.preset_id === 'chapters') {
+                setChaptersResult(data.result);
+                setActiveTab('guide'); // Switch to guide to see chapters
+            } else {
+                setAnalysisResult(data.result);
+                setActiveTab('analysis'); // Switch to analysis
+            }
+        } else {
+            alert('分析失败: ' + (data.detail || '未知错误'));
+        }
+    } catch (e) {
+        console.error(e);
+        alert('分析请求失败，请检查网络或后端日志');
+    } finally {
+        setIsAnalyzing(false);
+    }
+  };
+
+  const uniqueSpeakers = Array.from(new Set(localSegments.map(s => s.speaker || 'unknown_speaker_default')));
+
   return (
     <div className="h-screen bg-white flex flex-col">
       {/* Header */}
@@ -281,74 +325,133 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
             >
               笔记
             </button>
+            <button 
+              onClick={() => setActiveTab('analysis')}
+              className={`flex-1 py-4 text-sm font-semibold relative ${activeTab === 'analysis' ? 'text-gray-800' : 'text-gray-400'}`}
+            >
+              深度解读
+              {activeTab === 'analysis' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-gray-800 rounded-full"></div>}
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 space-y-8">
-            {/* Keywords */}
-            <section>
-              <h3 className="text-sm font-bold text-gray-800 mb-4">关键词</h3>
-              <div className="flex flex-wrap gap-2">
-                {keywords.map((kw, i) => (
-                  <span key={i} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-100 cursor-pointer transition-colors">
-                    {kw}
-                  </span>
-                ))}
-                <button className="text-xs text-blue-500 ml-auto mt-1 hover:underline">展开全部</button>
+            {activeTab === 'analysis' ? (
+              <div className="space-y-4">
+                 <div className="flex justify-between items-center mb-4">
+                   <h3 className="text-sm font-bold text-gray-800">深度解读</h3>
+                   {!analysisResult && (
+                     <button 
+                       onClick={() => setIsAnalysisModalOpen(true)}
+                       className="text-xs bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600 transition-colors shadow-sm"
+                     >
+                       开始解读
+                     </button>
+                   )}
+                   {analysisResult && (
+                      <button 
+                       onClick={() => setIsAnalysisModalOpen(true)}
+                       className="text-xs text-blue-500 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                     >
+                       重新生成
+                     </button>
+                   )}
+                 </div>
+                 
+                 {isAnalyzing ? (
+                   <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                     <i className="fa-solid fa-spinner fa-spin text-2xl mb-2 text-blue-500"></i>
+                     <span className="text-xs">AI 正在深度分析中...</span>
+                   </div>
+                 ) : (
+                   <DeepAnalysisList 
+                     analysisResult={analysisResult} 
+                     speakerMap={speakerMap} 
+                     onSeek={(time) => {
+                        const parts = time.split(':').map(Number);
+                        let seconds = 0;
+                        if (parts.length === 3) seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+                        else if (parts.length === 2) seconds = parts[0] * 60 + parts[1];
+                        setCurrentTime(seconds);
+                     }} 
+                   />
+                 )}
               </div>
-            </section>
-
-            {/* Summary */}
-            <section>
-              <h3 className="text-sm font-bold text-gray-800 mb-4">全文概要</h3>
-              <p className="text-sm text-gray-400 italic">
-                {meeting.summary || '没有总结内容哦'}
-              </p>
-            </section>
-
-            {/* Chapters */}
-            <section>
-              <div className="flex items-center gap-6 border-b border-gray-100 mb-4">
-                <h3 className="text-sm font-bold text-gray-800 border-b-2 border-gray-800 pb-2 -mb-[1px]">章节速览</h3>
-                <h3 className="text-sm font-bold text-gray-400 pb-2 cursor-pointer hover:text-gray-600">发言总结</h3>
-                <h3 className="text-sm font-bold text-gray-400 pb-2 cursor-pointer hover:text-gray-600">问答回顾</h3>
-              </div>
-              
-              <div className="space-y-6">
-                <div className="flex gap-3 group cursor-pointer">
-                   <span className="text-xs text-gray-400 font-mono mt-0.5">00:00</span>
-                   <div className="w-2 relative">
-                     <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-gray-200 group-hover:bg-blue-400 transition-colors"></div>
-                     <div className="absolute top-3 left-1/2 -translate-x-1/2 w-[1px] h-full bg-gray-100"></div>
-                   </div>
-                   <div className="flex-1 pb-4">
-                     <h4 className="text-sm font-bold text-gray-700 mb-2 group-hover:text-blue-600 transition-colors">西安地区合作与签约事宜讨论</h4>
-                     <p className="text-xs text-gray-500 leading-relaxed">
-                       对话围绕在西安地区的合作项目展开，提及了收入限制、签约流程及其后续影响，双方就合作细节进行了交流。
-                     </p>
-                   </div>
-                </div>
-
-                <div className="flex gap-3 group cursor-pointer">
-                   <span className="text-xs text-gray-400 font-mono mt-0.5">36:34</span>
-                   <div className="w-2 relative">
-                     <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-gray-200 group-hover:bg-blue-400 transition-colors"></div>
-                     <div className="absolute top-3 left-1/2 -translate-x-1/2 w-[1px] h-full bg-gray-100"></div>
-                   </div>
-                   <div className="flex-1 pb-4">
-                     <h4 className="text-sm font-bold text-gray-700 mb-2 group-hover:text-blue-600 transition-colors">业务合作与AI服务探讨</h4>
-                     <p className="text-xs text-gray-500 leading-relaxed">
-                       对话围绕业务合作与AI服务展开，讨论了执行过程中的挑战、对业务的深入理解。
-                     </p>
-                   </div>
-                </div>
-              </div>
-            </section>
+            ) : (
+              <>
+                {/* Keywords */}
+                <section>
+                  <h3 className="text-sm font-bold text-gray-800 mb-4">关键词</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {keywords.map((kw, i) => (
+                      <span key={i} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-100 cursor-pointer transition-colors">
+                        {kw}
+                      </span>
+                    ))}
+                    <button className="text-xs text-blue-500 ml-auto mt-1 hover:underline">展开全部</button>
+                  </div>
+                </section>
+    
+                {/* Summary */}
+                <section>
+                  <h3 className="text-sm font-bold text-gray-800 mb-4">全文概要</h3>
+                  <p className="text-sm text-gray-400 italic">
+                    {meeting.summary || '没有总结内容哦'}
+                  </p>
+                </section>
+    
+                {/* Chapters */}
+                <section>
+                  <div className="flex items-center gap-6 border-b border-gray-100 mb-4">
+                    <h3 className="text-sm font-bold text-gray-800 border-b-2 border-gray-800 pb-2 -mb-[1px]">章节速览</h3>
+                    <h3 className="text-sm font-bold text-gray-400 pb-2 cursor-pointer hover:text-gray-600">发言总结</h3>
+                    <h3 className="text-sm font-bold text-gray-400 pb-2 cursor-pointer hover:text-gray-600">问答回顾</h3>
+                  </div>
+                  
+                  <div className="space-y-6">
+                    <div className="flex gap-3 group cursor-pointer">
+                       <span className="text-xs text-gray-400 font-mono mt-0.5">00:00</span>
+                       <div className="w-2 relative">
+                         <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-gray-200 group-hover:bg-blue-400 transition-colors"></div>
+                         <div className="absolute top-3 left-1/2 -translate-x-1/2 w-[1px] h-full bg-gray-100"></div>
+                       </div>
+                       <div className="flex-1 pb-4">
+                         <h4 className="text-sm font-bold text-gray-700 mb-2 group-hover:text-blue-600 transition-colors">西安地区合作与签约事宜讨论</h4>
+                         <p className="text-xs text-gray-500 leading-relaxed">
+                           对话围绕在西安地区的合作项目展开，提及了收入限制、签约流程及其后续影响，双方就合作细节进行了交流。
+                         </p>
+                       </div>
+                    </div>
+    
+                    <div className="flex gap-3 group cursor-pointer">
+                       <span className="text-xs text-gray-400 font-mono mt-0.5">36:34</span>
+                       <div className="w-2 relative">
+                         <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-gray-200 group-hover:bg-blue-400 transition-colors"></div>
+                         <div className="absolute top-3 left-1/2 -translate-x-1/2 w-[1px] h-full bg-gray-100"></div>
+                       </div>
+                       <div className="flex-1 pb-4">
+                         <h4 className="text-sm font-bold text-gray-700 mb-2 group-hover:text-blue-600 transition-colors">业务合作与AI服务探讨</h4>
+                         <p className="text-xs text-gray-500 leading-relaxed">
+                           对话围绕业务合作与AI服务展开，讨论了执行过程中的挑战、对业务的深入理解。
+                         </p>
+                       </div>
+                    </div>
+                  </div>
+                </section>
+              </>
+            )}
           </div>
         </div>
 
         {/* Left Column: Transcript (Moved to Right) */}
         <div className="flex-1 overflow-y-auto bg-[#FAFAFA] p-6 relative">
-          <div className="max-w-3xl mx-auto bg-white min-h-full rounded-2xl shadow-sm p-8">
+          <div className="max-w-3xl mx-auto bg-white min-h-full rounded-2xl shadow-sm overflow-hidden">
+             {/* Persona Header */}
+             <PersonaHeader 
+                analysisResult={analysisResult && analysisResult.mode === 'deep_insight' ? (analysisResult as DeepInsightResult) : null}
+                speakers={uniqueSpeakers}
+             />
+
+             <div className="p-8">
             <div className="flex items-center justify-between mb-8">
               <h2 className="text-lg font-bold text-gray-800">语音转文字</h2>
               <div className="flex items-center gap-3">
@@ -391,6 +494,7 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
             
             {/* Scroll padding for bottom player */}
             <div className="h-32"></div>
+          </div>
           </div>
           
           {/* Floating Action Buttons */}
@@ -458,6 +562,13 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
           <button className="hover:text-blue-700 transition-colors"><i className="fa-solid fa-sliders"></i></button>
         </div>
       </div>
+      <DeepAnalysisConfigModal
+        isOpen={isAnalysisModalOpen}
+        onClose={() => setIsAnalysisModalOpen(false)}
+        onStartAnalysis={handleStartAnalysis}
+        speakers={uniqueSpeakers}
+        initialSpeakerMap={speakerMap}
+      />
     </div>
   );
 };

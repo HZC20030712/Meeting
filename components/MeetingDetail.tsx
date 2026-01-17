@@ -1,17 +1,18 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import DeepAnalysisConfigModal from './DeepAnalysisConfigModal';
 import DeepAnalysisList from './DeepAnalysisList';
 import PersonaHeader from './PersonaHeader';
 import SmartChapters from './SmartChapters';
-import { Meeting, TranscriptSegment, AnalysisResult, ChaptersResult, DeepInsightResult } from '../types';
+import { Meeting, TranscriptSegment, AnalysisResult, ChaptersResult, DeepInsightResult, FullSummaryResult } from '../types';
+import { Sparkles, MessageCircle, User } from 'lucide-react';
 
 interface MeetingDetailProps {
   meeting: Meeting;
   onBack: () => void;
 }
 
-type TabType = 'guide' | 'mindmap' | 'notes' | 'analysis';
+type TabType = 'summary' | 'analysis';
 
 const SpeakerTag: React.FC<{
   speakerId: string | undefined;
@@ -113,7 +114,7 @@ const SpeakerTag: React.FC<{
 };
 
 const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
-  const [activeTab, setActiveTab] = useState<TabType>('guide');
+  const [activeTab, setActiveTab] = useState<TabType>('summary');
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>(meeting.speakerMap || {});
@@ -124,14 +125,34 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
   
   // Use local state for segments to allow local edits
   const [localSegments, setLocalSegments] = useState<TranscriptSegment[]>(
-    meeting.segments || [
-      { id: '1', type: 'user', content: '好的。', startTime: '01:12:09', speaker: '发言人 2' },
-      { id: '2', type: 'user', content: '你跟他们聊，我们跟他聊聊。', startTime: '01:12:13', speaker: '发言人 4' },
-      { id: '3', type: 'user', content: '前面咨询你这两个岗位。', startTime: '01:12:16', speaker: '发言人 1' },
-      { id: '4', type: 'user', content: '你先自己先聊。好的，没问题。', startTime: '01:12:18', speaker: '发言人 2' },
-      { id: '5', type: 'user', content: '好，拜拜。好，再见蔡总。', startTime: '01:12:20', speaker: '发言人 4' },
-    ]
+    meeting.segments || []
   );
+  
+  // Safe parsing for full_summary analysis result
+  const [fullSummaryResult, setFullSummaryResult] = useState<FullSummaryResult | null>(() => {
+    if (meeting.analysis_result && (meeting.analysis_result as any).mode === 'full_summary') {
+        return meeting.analysis_result as FullSummaryResult;
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    setSpeakerMap(meeting.speakerMap || {});
+    setAnalysisResult(meeting.analysisResult || null);
+    setChaptersResult(meeting.chapters || null);
+    setLocalSegments(meeting.segments || []);
+    if (meeting.analysis_result && (meeting.analysis_result as any).mode === 'full_summary') {
+        setFullSummaryResult(meeting.analysis_result as FullSummaryResult);
+    } else {
+        setFullSummaryResult(null);
+    }
+  }, [meeting.id, meeting.analysis_result, meeting.chapters, meeting.segments, meeting.speakerMap]);
+
+  useEffect(() => {
+    if (localSegments.length === 0 && meeting.segments && meeting.segments.length > 0) {
+      setLocalSegments(meeting.segments);
+    }
+  }, [meeting.segments, localSegments.length]);
 
   const handleUpdateSpeaker = (segmentId: string, originalSpeakerId: string | undefined, name: string, isGlobal: boolean) => {
     if (isGlobal) {
@@ -231,6 +252,17 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
     }
   };
 
+  const handleQuickSummary = () => {
+    // One-click generation with default full_summary preset
+    const config = {
+        preset_id: 'full_summary',
+        speaker_map: speakerMap,
+        ignored_speakers: [],
+        custom_requirement: ''
+    };
+    handleStartAnalysis(config);
+  };
+
   const handleStartAnalysis = async (config: any) => {
     setIsAnalysisModalOpen(false);
     setIsAnalyzing(true);
@@ -247,9 +279,25 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
         });
         const data = await res.json();
         if (data.status === 'success') {
-            if (config.preset_id === 'chapters') {
+            if (config.preset_id === 'full_summary') {
+                // Update local state for immediate feedback
+                if (data.result.chapters) {
+                    setChaptersResult({ chapters: data.result.chapters });
+                }
+                setFullSummaryResult({
+                    mode: 'full_summary',
+                    speaker_summaries: data.result.speaker_summaries,
+                    qa_pairs: data.result.qa_pairs
+                });
+                
+                // Update keywords and summary in meeting object (optimistic)
+                if (data.result.keywords) meeting.keywords = data.result.keywords;
+                if (data.result.abstract) meeting.summary = data.result.abstract;
+                
+                setActiveTab('summary');
+            } else if (config.preset_id === 'chapters') {
                 setChaptersResult(data.result);
-                setActiveTab('guide'); // Switch to guide to see chapters
+                setActiveTab('summary'); // Switch to guide to see chapters
             } else {
                 setAnalysisResult(data.result);
                 setActiveTab('analysis'); // Switch to analysis
@@ -307,23 +355,11 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
         <div className="w-[400px] border-r border-gray-100 bg-white flex flex-col">
           <div className="flex border-b border-gray-100">
             <button 
-              onClick={() => setActiveTab('guide')}
-              className={`flex-1 py-4 text-sm font-semibold relative ${activeTab === 'guide' ? 'text-gray-800' : 'text-gray-400'}`}
+              onClick={() => setActiveTab('summary')}
+              className={`flex-1 py-4 text-sm font-semibold relative ${activeTab === 'summary' ? 'text-gray-800' : 'text-gray-400'}`}
             >
-              导读
-              {activeTab === 'guide' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-gray-800 rounded-full"></div>}
-            </button>
-            <button 
-              onClick={() => setActiveTab('mindmap')}
-              className={`flex-1 py-4 text-sm font-semibold relative ${activeTab === 'mindmap' ? 'text-gray-800' : 'text-gray-400'}`}
-            >
-              脑图
-            </button>
-            <button 
-              onClick={() => setActiveTab('notes')}
-              className={`flex-1 py-4 text-sm font-semibold relative ${activeTab === 'notes' ? 'text-gray-800' : 'text-gray-400'}`}
-            >
-              笔记
+              总结
+              {activeTab === 'summary' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-gray-800 rounded-full"></div>}
             </button>
             <button 
               onClick={() => setActiveTab('analysis')}
@@ -380,63 +416,133 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
               <>
                 {/* Keywords */}
                 <section>
-                  <h3 className="text-sm font-bold text-gray-800 mb-4">关键词</h3>
+                  <h3 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <Sparkles size={14} className="text-blue-500" /> 关键词
+                  </h3>
                   <div className="flex flex-wrap gap-2">
-                    {keywords.map((kw, i) => (
-                      <span key={i} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-100 cursor-pointer transition-colors">
-                        {kw}
-                      </span>
-                    ))}
-                    <button className="text-xs text-blue-500 ml-auto mt-1 hover:underline">展开全部</button>
+                    {/* Show skeletons if analyzing */}
+                    {isAnalyzing ? (
+                        Array.from({length: 5}).map((_, i) => (
+                             <div key={i} className="h-6 w-16 bg-gray-100 rounded animate-pulse"></div>
+                        ))
+                    ) : (
+                        (meeting.keywords || ['合作', '签约', '业务', '客户', '运营', 'AI', '咨询', '面诊', '手术']).map((kw, i) => (
+                        <span key={i} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-100 cursor-pointer transition-colors">
+                            {kw}
+                        </span>
+                        ))
+                    )}
                   </div>
                 </section>
     
                 {/* Summary */}
                 <section>
                   <h3 className="text-sm font-bold text-gray-800 mb-4">全文概要</h3>
-                  <p className="text-sm text-gray-400 italic">
-                    {meeting.summary || '没有总结内容哦'}
-                  </p>
+                  <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                    {isAnalyzing ? (
+                        <div className="space-y-2">
+                            <div className="h-4 bg-gray-200 rounded w-full animate-pulse"></div>
+                            <div className="h-4 bg-gray-200 rounded w-5/6 animate-pulse"></div>
+                            <div className="h-4 bg-gray-200 rounded w-4/6 animate-pulse"></div>
+                        </div>
+                    ) : (
+                        <p className="text-sm text-gray-700 leading-relaxed">
+                            {meeting.summary || '暂无总结内容，请点击下方按钮生成。'}
+                        </p>
+                    )}
+                    
+                    {!meeting.summary && !isAnalyzing && (
+                        <button 
+                            onClick={handleQuickSummary}
+                            className="mt-3 text-xs bg-blue-50 hover:bg-blue-100 text-blue-600 px-3 py-1.5 rounded transition-colors font-medium w-full"
+                        >
+                            生成智能总结
+                        </button>
+                    )}
+                  </div>
                 </section>
     
                 {/* Chapters */}
                 <section>
-                  <div className="flex items-center gap-6 border-b border-gray-100 mb-4">
-                    <h3 className="text-sm font-bold text-gray-800 border-b-2 border-gray-800 pb-2 -mb-[1px]">章节速览</h3>
-                    <h3 className="text-sm font-bold text-gray-400 pb-2 cursor-pointer hover:text-gray-600">发言总结</h3>
-                    <h3 className="text-sm font-bold text-gray-400 pb-2 cursor-pointer hover:text-gray-600">问答回顾</h3>
+                  <div className="flex items-center justify-between border-b border-gray-100 mb-4 pb-2">
+                    <h3 className="text-sm font-bold text-gray-800">章节速览</h3>
                   </div>
                   
-                  <div className="space-y-6">
-                    <div className="flex gap-3 group cursor-pointer">
-                       <span className="text-xs text-gray-400 font-mono mt-0.5">00:00</span>
-                       <div className="w-2 relative">
-                         <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-gray-200 group-hover:bg-blue-400 transition-colors"></div>
-                         <div className="absolute top-3 left-1/2 -translate-x-1/2 w-[1px] h-full bg-gray-100"></div>
-                       </div>
-                       <div className="flex-1 pb-4">
-                         <h4 className="text-sm font-bold text-gray-700 mb-2 group-hover:text-blue-600 transition-colors">西安地区合作与签约事宜讨论</h4>
-                         <p className="text-xs text-gray-500 leading-relaxed">
-                           对话围绕在西安地区的合作项目展开，提及了收入限制、签约流程及其后续影响，双方就合作细节进行了交流。
-                         </p>
-                       </div>
+                  {isAnalyzing ? (
+                     <div className="space-y-4">
+                        {[1, 2].map(i => (
+                            <div key={i} className="flex gap-2">
+                                <div className="w-10 h-4 bg-gray-100 rounded animate-pulse"></div>
+                                <div className="flex-1 space-y-2">
+                                    <div className="h-4 bg-gray-100 rounded w-3/4 animate-pulse"></div>
+                                    <div className="h-10 bg-gray-50 rounded w-full animate-pulse"></div>
+                                </div>
+                            </div>
+                        ))}
+                     </div>
+                  ) : !chaptersResult ? (
+                    <div className="text-center py-8">
+                       <p className="text-xs text-gray-400 mb-2">暂无章节信息</p>
+                       <button 
+                         onClick={handleQuickSummary}
+                         className="text-xs bg-blue-50 hover:bg-blue-100 text-blue-600 px-3 py-1.5 rounded transition-colors font-medium"
+                       >
+                         生成智能总结
+                       </button>
                     </div>
-    
-                    <div className="flex gap-3 group cursor-pointer">
-                       <span className="text-xs text-gray-400 font-mono mt-0.5">36:34</span>
-                       <div className="w-2 relative">
-                         <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-gray-200 group-hover:bg-blue-400 transition-colors"></div>
-                         <div className="absolute top-3 left-1/2 -translate-x-1/2 w-[1px] h-full bg-gray-100"></div>
-                       </div>
-                       <div className="flex-1 pb-4">
-                         <h4 className="text-sm font-bold text-gray-700 mb-2 group-hover:text-blue-600 transition-colors">业务合作与AI服务探讨</h4>
-                         <p className="text-xs text-gray-500 leading-relaxed">
-                           对话围绕业务合作与AI服务展开，讨论了执行过程中的挑战、对业务的深入理解。
-                         </p>
-                       </div>
-                    </div>
-                  </div>
+                  ) : (
+                    <SmartChapters 
+                      chaptersData={chaptersResult}
+                      onSeek={(time) => {
+                        const parts = time.split(':').map(Number);
+                        let seconds = 0;
+                        if (parts.length === 3) seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+                        else if (parts.length === 2) seconds = parts[0] * 60 + parts[1];
+                        setCurrentTime(seconds);
+                      }}
+                    />
+                  )}
                 </section>
+
+                {/* Speaker Summaries */}
+                {fullSummaryResult && fullSummaryResult.speaker_summaries && fullSummaryResult.speaker_summaries.length > 0 && (
+                    <section>
+                        <h3 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2">
+                            <User size={14} className="text-gray-500" /> 发言总结
+                        </h3>
+                        <div className="space-y-3">
+                            {fullSummaryResult.speaker_summaries.map((item, idx) => (
+                                <div key={idx} className="bg-white border border-gray-100 rounded-lg p-3 shadow-sm">
+                                    <div className="text-xs font-bold text-gray-900 mb-1">{item.speaker}</div>
+                                    <p className="text-xs text-gray-600">{item.summary}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                {/* Q&A Review */}
+                {fullSummaryResult && fullSummaryResult.qa_pairs && fullSummaryResult.qa_pairs.length > 0 && (
+                    <section>
+                        <h3 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2">
+                            <MessageCircle size={14} className="text-green-500" /> 问答回顾
+                        </h3>
+                        <div className="space-y-4">
+                            {fullSummaryResult.qa_pairs.map((qa, idx) => (
+                                <div key={idx} className="group">
+                                    <div className="flex gap-2 mb-1">
+                                        <span className="text-xs font-bold text-blue-600 shrink-0">Q:</span>
+                                        <p className="text-xs font-bold text-gray-800">{qa.question}</p>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <span className="text-xs font-bold text-green-600 shrink-0">A:</span>
+                                        <p className="text-xs text-gray-600 leading-relaxed">{qa.answer}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+                )}
               </>
             )}
           </div>
@@ -463,7 +569,11 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
             </div>
 
             <div className="space-y-8">
-              {localSegments.map((segment, index) => (
+              {localSegments.length === 0 ? (
+                <div className="py-20 text-center text-sm text-gray-400">
+                  暂无转写内容
+                </div>
+              ) : localSegments.map((segment, index) => (
                 <div key={segment.id || index} className="group">
                   <div className="flex items-center gap-3 mb-2">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs text-white ${

@@ -1,5 +1,11 @@
 [
   {
+    "id": "full_summary",
+    "name": "全面总结",
+    "description": "生成关键词、概要、章节、发言总结与问答回顾",
+    "skill_file": "full_summary.txt"
+  },
+  {
     "id": "project_standard",
     "name": "标准项目复盘",
     "description": "提取待办事项、关键决策与项目里程碑",
@@ -16,11 +22,5 @@
     "name": "关键决策推演",
     "description": "识别博弈节点，推演“平行宇宙”中的更优话术与结果",
     "skill_file": "crossroads.txt"
-  },
-  {
-    "id": "chapters",
-    "name": "智能分段",
-    "description": "自动划分会议章节与摘要",
-    "skill_file": "chapters.txt"
   }
 ]

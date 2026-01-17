@@ -85,12 +85,16 @@ const App: React.FC = () => {
         const response = await fetch(`http://localhost:8000/api/meetings/${meeting.id}`);
         if (response.ok) {
           const detail = await response.json();
-          // Update meeting with segments
-          const updatedMeetings = meetings.map(m => 
-            m.id === meeting.id ? { ...m, segments: detail.segments } : m
+          const updatedMeeting: Meeting = {
+            ...meeting,
+            segments: detail.segments,
+            audioUrl: detail.file_url || meeting.audioUrl,
+            analysisResult: detail.analysis_result || meeting.analysisResult,
+          };
+          setMeetings(prev =>
+            prev.map(m => (m.id === meeting.id ? updatedMeeting : m))
           );
-          setMeetings(updatedMeetings);
-          setSelectedMeeting(meeting); // Use setSelectedMeeting directly
+          setSelectedMeeting(updatedMeeting);
           return;
         }
       } catch (error) {
@@ -268,7 +272,7 @@ const App: React.FC = () => {
                   </div>
                 ) : (
                   <>
-                    <MeetingList meetings={meetings} onMeetingClick={setSelectedMeeting} />
+                    <MeetingList meetings={meetings} onMeetingClick={handleMeetingClick} />
                     <TodoList />
                   </>
                 )}

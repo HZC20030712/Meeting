@@ -17,7 +17,19 @@ export interface Meeting {
   chapters?: ChaptersResult;
 }
 
-export type AnalysisResult = ProjectStandardResult | DeepInsightResult | CrossroadsResult | ChaptersResult;
+export type AnalysisResult = ProjectStandardResult | DeepInsightResult | CrossroadsResult | ChaptersResult | FullSummaryResult;
+
+export interface FullSummaryResult {
+  mode: 'full_summary';
+  speaker_summaries: {
+    speaker: string;
+    summary: string;
+  }[];
+  qa_pairs: {
+    question: string;
+    answer: string;
+  }[];
+}
 
 export interface ChaptersResult {
   chapters: {

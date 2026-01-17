@@ -92,7 +92,9 @@ class Meeting(Base):
     type = Column(String, default="product") # meeting type
     analysis_result = Column(Text, nullable=True) # JSON string for analysis result
     chapters = Column(Text, nullable=True) # JSON string for smart chapters
-
+    summary = Column(Text, nullable=True) # Full summary text
+    keywords = Column(Text, nullable=True) # JSON list of keywords
+    
     # Relationship to segments
     segments = relationship("Segment", back_populates="meeting", cascade="all, delete-orphan")
 
@@ -111,6 +113,35 @@ class Segment(Base):
 
 # Create tables
 Base.metadata.create_all(bind=engine)
+
+from sqlalchemy import text
+
+# 2. Check if 'chapters' column exists, if not add it
+try:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT chapters FROM meetings LIMIT 1"))
+except Exception:
+    logger.info("Adding 'chapters' column to meetings table")
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE meetings ADD COLUMN chapters TEXT"))
+
+# 3. Check if 'summary' column exists
+try:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT summary FROM meetings LIMIT 1"))
+except Exception:
+    logger.info("Adding 'summary' column to meetings table")
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE meetings ADD COLUMN summary TEXT"))
+
+# 4. Check if 'keywords' column exists
+try:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT keywords FROM meetings LIMIT 1"))
+except Exception:
+    logger.info("Adding 'keywords' column to meetings table")
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE meetings ADD COLUMN keywords TEXT"))
 
 # Dependency to get DB session
 def get_db():
@@ -330,7 +361,13 @@ def get_meeting_detail(meeting_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Meeting not found")
     
     segments = []
-    for idx, seg in enumerate(meeting.segments):
+    ordered_segments = (
+        db.query(Segment)
+        .filter(Segment.meeting_id == meeting_id)
+        .order_by(Segment.id.asc())
+        .all()
+    )
+    for seg in ordered_segments:
         segments.append({
             "id": f"seg-{seg.id}",
             "type": "user",
@@ -347,7 +384,9 @@ def get_meeting_detail(meeting_id: int, db: Session = Depends(get_db)):
         "segments": segments,
         "file_url": meeting.file_url,
         "analysis_result": json.loads(meeting.analysis_result) if meeting.analysis_result else None,
-        "chapters": json.loads(meeting.chapters) if meeting.chapters else None
+        "chapters": json.loads(meeting.chapters) if meeting.chapters else None,
+        "summary": meeting.summary,
+        "keywords": json.loads(meeting.keywords) if meeting.keywords else None
     }
 
 class AnalysisRequest(BaseModel):
@@ -442,7 +481,29 @@ async def analyze_meeting(meeting_id: int, request: AnalysisRequest, db: Session
             raise HTTPException(status_code=500, detail="Analysis generation failed (Invalid JSON)")
 
         # 5. Save Result
-        meeting.analysis_result = json.dumps(analysis_data, ensure_ascii=False)
+        if request.preset_id == "chapters":
+            meeting.chapters = json.dumps(analysis_data, ensure_ascii=False)
+        elif request.preset_id == "full_summary":
+            # Extract and save individual fields
+            meeting.summary = analysis_data.get("abstract", "")
+            meeting.keywords = json.dumps(analysis_data.get("keywords", []), ensure_ascii=False)
+            
+            # Save chapters separately
+            chapters_data = {"chapters": analysis_data.get("chapters", [])}
+            meeting.chapters = json.dumps(chapters_data, ensure_ascii=False)
+            
+            # Save speaker summaries and QA as analysis_result (or could be new columns)
+            # For now, we wrap them in a specific structure compatible with frontend
+            full_summary_result = {
+                "mode": "full_summary",
+                "speaker_summaries": analysis_data.get("speaker_summaries", []),
+                "qa_pairs": analysis_data.get("qa_pairs", [])
+            }
+            meeting.analysis_result = json.dumps(full_summary_result, ensure_ascii=False)
+            
+        else:
+            meeting.analysis_result = json.dumps(analysis_data, ensure_ascii=False)
+        
         db.commit()
         
         return {"status": "success", "result": analysis_data}
@@ -600,13 +661,6 @@ def _ms_to_mmss(ms: int | None) -> str | None:
     return f"{m:02d}:{s:02d}"
 
 def process_realtime_recording(meeting_id: int, file_path: str):
-    """
-    Post-process the realtime recording:
-    1. Convert to mono & Upload to OSS
-    2. Update Meeting file_url
-    3. Run offline FunASR (with diarization)
-    4. Replace crude realtime segments with high-quality offline segments
-    """
     logger.info(f"Starting post-processing for meeting {meeting_id}, file: {file_path}")
     
     if not os.path.exists(file_path):
@@ -618,10 +672,11 @@ def process_realtime_recording(meeting_id: int, file_path: str):
         # 1. Standardize & Hash
         file_hash = calculate_file_hash_from_file(file_path)
         mono_path = ensure_mono_wav(file_path, file_hash)
+        mono_hash = calculate_file_hash_from_file(mono_path)
         
         # 2. Upload to OSS
         filename = f"realtime_{meeting_id}.wav"
-        oss_url = upload_to_oss(mono_path, filename, file_hash)
+        oss_url = upload_to_oss(mono_path, filename, mono_hash)
         
         # Update Meeting URL immediately
         meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
@@ -716,21 +771,19 @@ class QwenRealtimeClient:
         self.thread = None
         self.meeting_id = meeting_id
         self.start_timestamp = time.time()
-        
-        # Audio Recording
+
         self.audio_filename = f"temp_{self.meeting_id}.wav" if self.meeting_id else f"temp_unknown_{uuid.uuid4().hex}.wav"
         self.audio_path = os.path.join(UPLOAD_DIR, self.audio_filename)
         self.wave_file = None
         try:
             self.wave_file = wave.open(self.audio_path, 'wb')
-            self.wave_file.setnchannels(1) # Assuming Mono
-            self.wave_file.setsampwidth(2) # Assuming 16-bit PCM
+            self.wave_file.setnchannels(1)
+            self.wave_file.setsampwidth(2)
             self.wave_file.setframerate(16000)
             logger.info(f"Recording audio to {self.audio_path}")
         except Exception as e:
             logger.error(f"Failed to create audio file: {e}")
 
-        # Buffer for suggestions
         self.context_buffer = deque()
         self.last_text_time = time.time()
         self.suggestion_generated = False
@@ -789,18 +842,16 @@ class QwenRealtimeClient:
             
             db = SessionLocal()
             try:
-                # 1. Save Segment
                 seg = Segment(
                     meeting_id=self.meeting_id,
                     content=text,
-                    speaker="Speaker", # Realtime doesn't provide speaker ID yet
+                    speaker="Speaker",
                     start_time=start_str,
                     end_time=end_str,
                     emotion=None
                 )
                 db.add(seg)
                 
-                # 2. Update Meeting Duration
                 meeting = db.query(Meeting).filter(Meeting.id == self.meeting_id).first()
                 if meeting:
                     meeting.duration = end_str
@@ -851,7 +902,6 @@ class QwenRealtimeClient:
     def send_audio(self, audio_bytes: bytes):
         if not self.is_connected: return
         
-        # Write to local WAV file
         if self.wave_file:
             try:
                 self.wave_file.writeframes(audio_bytes)
@@ -871,7 +921,6 @@ class QwenRealtimeClient:
             self.ws.close()
         self.is_connected = False
         
-        # Close wave file
         if self.wave_file:
             try:
                 self.wave_file.close()
@@ -955,8 +1004,8 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     loop = asyncio.get_running_loop()
     
-    # Create Meeting Record for Persistence
     meeting_id = None
+    db = None
     try:
         db = SessionLocal()
         now = datetime.now()
@@ -966,16 +1015,18 @@ async def websocket_endpoint(websocket: WebSocket):
             time=now.strftime("%H:%M"),
             duration="00:00",
             type="realtime",
-            file_url="" # No file for realtime yet
+            file_url=""
         )
         db.add(new_meeting)
         db.commit()
         db.refresh(new_meeting)
         meeting_id = new_meeting.id
         logger.info(f"Created Realtime Meeting: {meeting_id}")
-        db.close()
     except Exception as e:
         logger.error(f"Failed to create meeting record: {e}")
+    finally:
+        if db:
+            db.close()
     
     # Init Qwen Client
     qwen_client = QwenRealtimeClient(websocket, loop, meeting_id=meeting_id)
@@ -1010,10 +1061,8 @@ async def websocket_endpoint(websocket: WebSocket):
         qwen_client.close()
         monitor_task.cancel()
         
-        # Trigger post-processing
         if qwen_client.meeting_id and os.path.exists(qwen_client.audio_path):
             logger.info(f"Scheduling post-processing for meeting {qwen_client.meeting_id}")
-            # Run in thread pool to avoid blocking event loop
             loop.run_in_executor(None, process_realtime_recording, qwen_client.meeting_id, qwen_client.audio_path)
 
 @app.get("/")

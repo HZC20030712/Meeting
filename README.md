@@ -1,3 +1,25 @@
+---
+# 详细文档见https://modelscope.cn/docs/%E5%88%9B%E7%A9%BA%E9%97%B4%E5%8D%A1%E7%89%87
+domain: #领域：cv/nlp/audio/multi-modal/AutoML
+# - cv
+tags: #自定义标签
+-
+datasets: #关联数据集
+  evaluation:
+  #- iic/ICDAR13_HCTR_Dataset
+  test:
+  #- iic/MTWI
+  train:
+  #- iic/SIBR
+models: #关联模型
+#- iic/ofa_ocr-recognition_general_base_zh
+
+## 启动文件(若SDK为Gradio/Streamlit，默认为app.py, 若为Static HTML, 默认为index.html)
+# deployspec:
+#   entry_file: app.py
+license: Apache License 2.0
+---
+
 # Meeting AI - AI 会议纪要助手
 
 Meeting AI 是一个智能化的会议管理与分析平台，集成了实时语音转写（ASR）、AI 智能对话和会议洞察功能。旨在帮助团队高效记录、回顾和挖掘会议价值。
@@ -131,3 +153,8 @@ Meeting/
 
 - 确保后端服务先于前端启动，否则 WebSocket 连接会失败。
 - 浏览器需授予麦克风权限以使用录音功能。
+
+#### Clone with HTTP
+```bash
+ git clone https://www.modelscope.cn/studios/MuChengZJU/meeting-test1-docker.git
+```

@@ -12,6 +12,7 @@ START_BACKEND=true
 START_FRONTEND=true
 DEBUG_MODE=false
 PORT=8000
+PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 
 # --- 帮助信息 ---
 show_help() {
@@ -87,7 +88,8 @@ start_backend() {
     # 检查虚拟环境
     if [ ! -d ".venv" ]; then
         echo -e "${YELLOW}[Backend] 虚拟环境未找到，正在创建并安装依赖...${NC}"
-        uv venv
+        uv python install "$PYTHON_VERSION"
+        uv venv --python "$PYTHON_VERSION"
         source .venv/bin/activate
         uv pip install -r requirements.txt
     fi

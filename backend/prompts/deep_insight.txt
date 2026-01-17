@@ -1,0 +1,27 @@
+请调用你的“心理侧写”和“博弈论”模块，分析对话背后的深层含义。
+重点关注：言行不一、防御性表达、利益冲突、情绪波动。
+
+请按以下 JSON Schema 输出：
+
+{
+  "mode": "deep_insight",
+  "insights": [
+    {
+      "timestamp": "HH:MM:SS (原文触发点)",
+      "speaker": "Speaker Name",
+      "original_text": "原文摘录（如：'原则上是可以的'）",
+      "subtext": "潜台词解读（如：'他对价格不满意，但在拖延时间'）",
+      "intent_tag": "标签（如：防御/试探/画饼/拒绝/让步）",
+      "confidence": 0.85, // AI对该解读的置信度，用于前端渲染透明度
+      "risk_level": "High/Medium/Low" // 风险等级，前端可据此标红
+    }
+  ],
+  "speaker_profiles": [ // 对应你的“人格建模胶囊”更新
+    {
+      "name": "Speaker Name",
+      "stance": "当前立场（如：激进/保守/犹豫）",
+      "hidden_agenda": "推测的隐形议程（如：想换供应商）",
+      "emotion_curve": ["00:00-平静", "10:20-焦虑", "30:00-放松"]
+    }
+  ]
+}

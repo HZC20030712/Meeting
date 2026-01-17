@@ -1,0 +1,31 @@
+请分析会议内容，提取事实性信息。请按以下 JSON Schema 输出：
+
+{
+  "mode": "project_standard",
+  "meta": {
+    "title": "基于内容的会议标题",
+    "summary": "50字以内的执行摘要",
+    "duration": "会议总时长"
+  },
+  "action_items": [
+    {
+      "task": "任务的具体描述",
+      "owner": "责任人（如果未提及则填'待定'）",
+      "deadline": "截止时间",
+      "priority": "High/Medium/Low",
+      "timestamp": "HH:MM:SS (任务被提及的时间点)"
+    }
+  ],
+  "decisions": [
+    {
+      "content": "达成的关键共识或决议",
+      "timestamp": "HH:MM:SS"
+    }
+  ],
+  "key_milestones": [
+    {
+      "event": "关键时间节点事件",
+      "date": "YYYY-MM-DD"
+    }
+  ]
+}

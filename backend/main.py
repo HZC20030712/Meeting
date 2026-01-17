@@ -8,6 +8,7 @@ import threading
 import hashlib
 import shutil
 import subprocess
+import wave
 import ssl
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Depends
@@ -80,7 +81,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
 # --- Database Setup (SQLite + SQLAlchemy) ---
 # Create a local SQLite database file
-SQLALCHEMY_DATABASE_URL = "sqlite:///./meetings.db"
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'meetings.db')}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
@@ -101,7 +102,11 @@ class Meeting(Base):
     file_url = Column(String) # OSS URL
     created_at = Column(DateTime, default=datetime.now)
     type = Column(String, default="product") # meeting type
-
+    analysis_result = Column(Text, nullable=True) # JSON string for analysis result
+    chapters = Column(Text, nullable=True) # JSON string for smart chapters
+    summary = Column(Text, nullable=True) # Full summary text
+    keywords = Column(Text, nullable=True) # JSON list of keywords
+    
     # Relationship to segments
     segments = relationship("Segment", back_populates="meeting", cascade="all, delete-orphan")
 
@@ -120,6 +125,35 @@ class Segment(Base):
 
 # Create tables
 Base.metadata.create_all(bind=engine)
+
+from sqlalchemy import text
+
+# 2. Check if 'chapters' column exists, if not add it
+try:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT chapters FROM meetings LIMIT 1"))
+except Exception:
+    logger.info("Adding 'chapters' column to meetings table")
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE meetings ADD COLUMN chapters TEXT"))
+
+# 3. Check if 'summary' column exists
+try:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT summary FROM meetings LIMIT 1"))
+except Exception:
+    logger.info("Adding 'summary' column to meetings table")
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE meetings ADD COLUMN summary TEXT"))
+
+# 4. Check if 'keywords' column exists
+try:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT keywords FROM meetings LIMIT 1"))
+except Exception:
+    logger.info("Adding 'keywords' column to meetings table")
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE meetings ADD COLUMN keywords TEXT"))
 
 # Dependency to get DB session
 def get_db():
@@ -339,7 +373,13 @@ def get_meeting_detail(meeting_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Meeting not found")
     
     segments = []
-    for idx, seg in enumerate(meeting.segments):
+    ordered_segments = (
+        db.query(Segment)
+        .filter(Segment.meeting_id == meeting_id)
+        .order_by(Segment.id.asc())
+        .all()
+    )
+    for seg in ordered_segments:
         segments.append({
             "id": f"seg-{seg.id}",
             "type": "user",
@@ -354,8 +394,168 @@ def get_meeting_detail(meeting_id: int, db: Session = Depends(get_db)):
         "id": str(meeting.id),
         "title": meeting.title,
         "segments": segments,
-        "file_url": meeting.file_url
+        "file_url": meeting.file_url,
+        "analysis_result": json.loads(meeting.analysis_result) if meeting.analysis_result else None,
+        "chapters": json.loads(meeting.chapters) if meeting.chapters else None,
+        "summary": meeting.summary,
+        "keywords": json.loads(meeting.keywords) if meeting.keywords else None
     }
+
+class AnalysisRequest(BaseModel):
+    speaker_map: dict[str, str] = {}
+    ignored_speakers: list[str] = []
+    preset_id: str
+    custom_requirement: str = ""
+
+class UpdateSpeakerRequest(BaseModel):
+    original_name: str
+    new_name: str
+
+@app.put("/api/meetings/{meeting_id}/speakers")
+def update_speaker_name(meeting_id: int, request: UpdateSpeakerRequest, db: Session = Depends(get_db)):
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+        
+    # Update segments
+    # Note: SQLite may not support UPDATE ... FROM syntax in older versions, so we use standard update
+    db.query(Segment).filter(
+        Segment.meeting_id == meeting_id,
+        Segment.speaker == request.original_name
+    ).update({Segment.speaker: request.new_name}, synchronize_session=False)
+    
+    db.commit()
+    
+    return {"status": "success", "message": f"Updated speaker {request.original_name} to {request.new_name}"}
+
+@app.get("/api/presets")
+def get_presets():
+    try:
+        preset_path = os.path.join(os.path.dirname(__file__), "presets.json")
+        if not os.path.exists(preset_path):
+             return []
+        with open(preset_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load presets: {e}")
+        return []
+
+def load_prompt_file(filename: str) -> str:
+    try:
+        path = os.path.join(os.path.dirname(__file__), "prompts", filename)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
+    except Exception as e:
+        logger.error(f"Error loading prompt file {filename}: {e}")
+        return ""
+
+def perform_analysis(meeting_id: int, preset_id: str, speaker_map: dict = {}, ignored_speakers: list = [], custom_requirement: str = ""):
+    """
+    Internal synchronous analysis function to be called by API or background tasks.
+    Creates its own DB session to avoid threading issues.
+    """
+    db = SessionLocal()
+    try:
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+        if not meeting:
+            logger.error(f"Meeting {meeting_id} not found for analysis")
+            return None
+        
+        # 1. Load Preset
+        presets = get_presets()
+        preset = next((p for p in presets if p["id"] == preset_id), None)
+        if not preset:
+            logger.error(f"Invalid preset_id: {preset_id}")
+            return None
+        
+        base_prompt = load_prompt_file("base.txt")
+        skill_prompt = load_prompt_file(preset["skill_file"])
+        
+        # 2. Build Context
+        transcript_text = ""
+        for seg in meeting.segments:
+            if seg.speaker in ignored_speakers:
+                continue
+            display_name = speaker_map.get(seg.speaker, seg.speaker)
+            transcript_text += f"[{seg.start_time}] {seg.speaker} ({display_name}): {seg.content}\n"
+        
+        # 3. Build Prompt
+        system_prompt = f"{base_prompt}\n\n---\n你的具体任务是：\n{skill_prompt}"
+        if custom_requirement:
+            system_prompt += f"\n\n---\n额外用户要求：\n{custom_requirement}"
+        user_prompt = f"会议录音文本如下：\n{transcript_text}"
+        
+        # 4. Call Gemini
+        logger.info(f"Calling Gemini for meeting {meeting_id} with preset {preset_id}")
+        response = client.chat.completions.create(
+            model="gemini-3-flash-preview", 
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        
+        content = response.choices[0].message.content
+        if content.startswith("```json"): content = content[7:]
+        if content.endswith("```"): content = content[:-3]
+        content = content.strip()
+            
+        try:
+            analysis_data = json.loads(content)
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON from Gemini for meeting {meeting_id}")
+            return None
+
+        # 5. Save Result
+        if preset_id == "chapters":
+            meeting.chapters = json.dumps(analysis_data, ensure_ascii=False)
+        elif preset_id == "full_summary":
+            meeting.summary = analysis_data.get("abstract", "")
+            meeting.keywords = json.dumps(analysis_data.get("keywords", []), ensure_ascii=False)
+            chapters_data = {"chapters": analysis_data.get("chapters", [])}
+            meeting.chapters = json.dumps(chapters_data, ensure_ascii=False)
+            full_summary_result = {
+                "mode": "full_summary",
+                "speaker_summaries": analysis_data.get("speaker_summaries", []),
+                "qa_pairs": analysis_data.get("qa_pairs", [])
+            }
+            meeting.analysis_result = json.dumps(full_summary_result, ensure_ascii=False)
+        else:
+            meeting.analysis_result = json.dumps(analysis_data, ensure_ascii=False)
+        
+        db.commit()
+        logger.info(f"Analysis completed for meeting {meeting_id}")
+        return analysis_data
+        
+    except Exception as e:
+        logger.error(f"Internal analysis failed for meeting {meeting_id}: {e}")
+        return None
+    finally:
+        db.close()
+
+@app.post("/api/meetings/{meeting_id}/analysis")
+async def analyze_meeting(meeting_id: int, request: AnalysisRequest, db: Session = Depends(get_db)):
+    # Reuse the internal logic, but run in thread pool to avoid blocking async loop if synchronous
+    # Since perform_analysis creates its own session, we just pass ID
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, 
+        perform_analysis, 
+        meeting_id, 
+        request.preset_id, 
+        request.speaker_map, 
+        request.ignored_speakers, 
+        request.custom_requirement
+    )
+    
+    if result is None:
+         raise HTTPException(status_code=500, detail="Analysis failed (check logs)")
+         
+    return {"status": "success", "result": result}
+
+
 
 @app.post("/api/asr/file")
 async def file_transcribe(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -495,6 +695,11 @@ async def file_transcribe(file: UploadFile = File(...), db: Session = Depends(ge
     except Exception as e:
         logger.error(f"File Transcription Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Trigger auto-summary (Best Effort, non-blocking)
+        # Note: If we use BackgroundTasks here, it's better. But simple Thread also works.
+        if 'new_meeting' in locals() and new_meeting.id:
+            threading.Thread(target=perform_analysis, args=(new_meeting.id, "full_summary")).start()
 
 def _ms_to_mmss(ms: int | None) -> str | None:
     if ms is None:
@@ -504,17 +709,133 @@ def _ms_to_mmss(ms: int | None) -> str | None:
     s = seconds % 60
     return f"{m:02d}:{s:02d}"
 
+def process_realtime_recording(meeting_id: int, file_path: str):
+    logger.info(f"Starting post-processing for meeting {meeting_id}, file: {file_path}")
+    
+    if not os.path.exists(file_path):
+        logger.error(f"File not found: {file_path}")
+        return
+
+    db = SessionLocal()
+    try:
+        # 1. Standardize & Hash
+        file_hash = calculate_file_hash_from_file(file_path)
+        mono_path = ensure_mono_wav(file_path, file_hash)
+        mono_hash = calculate_file_hash_from_file(mono_path)
+        
+        # 2. Upload to OSS
+        filename = f"realtime_{meeting_id}.wav"
+        oss_url = upload_to_oss(mono_path, filename, mono_hash)
+        
+        # Update Meeting URL immediately
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+        if meeting:
+            meeting.file_url = oss_url
+            db.commit()
+            logger.info(f"Updated meeting {meeting_id} file_url: {oss_url}")
+        else:
+            logger.error(f"Meeting {meeting_id} not found during post-processing")
+            return
+        
+        # 3. Offline Transcription (FunASR) with Diarization
+        logger.info(f"Triggering offline transcription for meeting {meeting_id}")
+        output = transcribe_with_fun_asr(oss_url)
+        task_id = output.task_id
+        
+        # 4. Parse Result (Reuse logic)
+        transcription_url = None
+        results = output.get("results")
+        if results and len(results) > 0:
+            first_res = results[0]
+            transcription_url = first_res.get("transcription_url")
+        
+        transcription_payload = None
+        if transcription_url:
+            logger.info(f"Fetching transcription json: {_safe_url(transcription_url)}")
+            r = requests.get(transcription_url, timeout=30); r.raise_for_status()
+            transcription_payload = r.json()
+        elif results:
+            transcription_payload = {"results": results}
+        else:
+             transcription_payload = output
+            
+        sentences = _extract_sentences_from_transcription_payload(transcription_payload or {})
+        
+        if not sentences:
+             logger.warning(f"No sentences found in offline transcription for meeting {meeting_id}")
+             return
+
+        # 5. Replace Segments
+        # Delete old realtime segments
+        db.query(Segment).filter(Segment.meeting_id == meeting_id).delete()
+        
+        # Insert new segments
+        new_segments = []
+        for sent in sentences:
+            start = _ms_to_mmss(sent.get("begin_time"))
+            end = _ms_to_mmss(sent.get("end_time"))
+            
+            spk_id = sent.get("speaker_id")
+            if spk_id is None: spk_id = sent.get("speaker")
+            
+            speaker = f"Speaker {spk_id}" if spk_id is not None else "未知发言人"
+            
+            seg = Segment(
+                meeting_id=meeting_id,
+                content=sent.get("text", ""),
+                speaker=speaker,
+                start_time=start,
+                end_time=end,
+                emotion=sent.get("emotion_tag")
+            )
+            new_segments.append(seg)
+            
+        db.add_all(new_segments)
+        
+        # Update duration again with precise time
+        last_end = sentences[-1].get("end_time")
+        duration_str = _ms_to_mmss(last_end) or "00:00"
+        meeting.duration = duration_str
+        
+        db.commit()
+        logger.info(f"Successfully re-processed meeting {meeting_id} with offline model ({len(new_segments)} segments)")
+        
+        # Trigger auto-summary
+        threading.Thread(target=perform_analysis, args=(meeting_id, "full_summary")).start()
+        
+    except Exception as e:
+        logger.error(f"Post-processing failed for meeting {meeting_id}: {e}")
+        db.rollback()
+    finally:
+        db.close()
+        # Optional: Clean up temp file? 
+        # os.remove(file_path) 
+
+
 # --- Qwen3 Realtime ASR (WebSocket) ---
 
 class QwenRealtimeClient:
-    def __init__(self, frontend_ws: WebSocket, loop: asyncio.AbstractEventLoop):
+    def __init__(self, frontend_ws: WebSocket, loop: asyncio.AbstractEventLoop, meeting_id: int = None):
         self.frontend_ws = frontend_ws
         self.loop = loop
         self.ws = None
         self.is_connected = False
         self.thread = None
-        
-        # Buffer for suggestions
+        self.meeting_id = meeting_id
+        self.start_timestamp = time.time()
+
+        self.audio_filename = f"temp_{self.meeting_id}.wav" if self.meeting_id else f"temp_unknown_{uuid.uuid4().hex}.wav"
+        self.audio_path = os.path.join(UPLOAD_DIR, self.audio_filename)
+        self.wave_file = None
+        try:
+            self.wave_file = wave.open(self.audio_path, 'wb')
+            self.wave_file.setnchannels(1)
+            self.wave_file.setsampwidth(2)
+            self.wave_file.setframerate(16000)
+            logger.info(f"Recording audio to {self.audio_path}")
+        except Exception as e:
+            logger.error(f"Failed to create audio file: {e}")
+
         self.context_buffer = deque()
         self.last_text_time = time.time()
         self.suggestion_generated = False
@@ -568,6 +889,47 @@ class QwenRealtimeClient:
         }
         ws.send(json.dumps(session_event))
 
+    def _save_segment_to_db(self, text: str):
+        if not self.meeting_id or not text.strip():
+            return
+            
+        try:
+            # Calculate relative time
+            now = time.time()
+            elapsed_ms = (now - self.start_timestamp) * 1000
+            # A rough estimate: assume this sentence ended now, and started 2s ago or just use same start/end
+            # Better: use last_text_time as start, now as end
+            start_ms = (self.last_text_time - self.start_timestamp) * 1000
+            if start_ms < 0: start_ms = 0
+            
+            start_str = _ms_to_mmss(start_ms)
+            end_str = _ms_to_mmss(elapsed_ms)
+            
+            db = SessionLocal()
+            try:
+                seg = Segment(
+                    meeting_id=self.meeting_id,
+                    content=text,
+                    speaker="Speaker",
+                    start_time=start_str,
+                    end_time=end_str,
+                    emotion=None
+                )
+                db.add(seg)
+                
+                meeting = db.query(Meeting).filter(Meeting.id == self.meeting_id).first()
+                if meeting:
+                    meeting.duration = end_str
+                    
+                db.commit()
+            except Exception as e:
+                logger.error(f"Failed to save segment to DB: {e}")
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"Error in _save_segment_to_db wrapper: {e}")
+
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
@@ -577,32 +939,20 @@ class QwenRealtimeClient:
                 logger.info(f"[QwenWS] Event type: {event_type}")
             
             # Handle transcription events
-            # Note: Actual event names depend on Qwen Realtime protocol (similar to OpenAI Realtime)
-            # Adjust these based on actual response structure
-            if isinstance(event_type, str):
-                if event_type in ("response.audio_transcript.delta", "response.audio_transcript.done"):
-                    if event_type.endswith(".delta"):
-                        text = data.get("delta", "")
-                        if isinstance(text, str) and text:
-                            self.current_sentence_partial += text
-                            self._send_to_frontend(self.current_sentence_partial, is_final=False)
-                    else:
-                        text = data.get("transcript", "")
-                        self.current_sentence_partial = ""
-                        if isinstance(text, str) and text:
-                            self._send_to_frontend(text, is_final=True)
-                            self.context_buffer.append((time.time(), text))
-                            self.last_text_time = time.time()
-                            self.suggestion_generated = False
-                elif "transcript" in event_type:
-                    text = data.get("delta") if event_type.endswith(".delta") else (data.get("transcript") or data.get("text"))
-                    if isinstance(text, str) and text:
-                        is_final = bool(event_type.endswith(".done") or event_type.endswith(".completed"))
-                        self._send_to_frontend(text, is_final=is_final)
-                        if is_final:
-                            self.context_buffer.append((time.time(), text))
-                            self.last_text_time = time.time()
-                            self.suggestion_generated = False
+            if data.get("type") == "response.audio_transcript.delta":
+                 text = data.get("delta", "")
+                 self._send_to_frontend(text, is_final=False)
+            elif data.get("type") == "response.audio_transcript.done":
+                 text = data.get("transcript", "")
+                 self._send_to_frontend(text, is_final=True)
+                 if text.strip():
+                     self.context_buffer.append((time.time(), text))
+                     
+                     # Save to DB
+                     self._save_segment_to_db(text)
+                     
+                     self.last_text_time = time.time()
+                     self.suggestion_generated = False
             
             # Fallback/Other event types handling...
             
@@ -620,6 +970,12 @@ class QwenRealtimeClient:
     def send_audio(self, audio_bytes: bytes):
         if not self.is_connected: return
         
+        if self.wave_file:
+            try:
+                self.wave_file.writeframes(audio_bytes)
+            except Exception as e:
+                logger.error(f"Error writing to wave file: {e}")
+
         # Encode audio to base64
         encoded = base64.b64encode(audio_bytes).decode("utf-8")
         event = {
@@ -633,6 +989,14 @@ class QwenRealtimeClient:
         if self.ws:
             self.ws.close()
         self.is_connected = False
+        
+        if self.wave_file:
+            try:
+                self.wave_file.close()
+                logger.info(f"Audio recording saved: {self.audio_path}")
+            except Exception as e:
+                logger.error(f"Error closing wave file: {e}")
+            self.wave_file = None
 
     def _send_to_frontend(self, text: str, is_final: bool):
         payload = {
@@ -711,8 +1075,32 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info("Frontend WebSocket connected.")
     loop = asyncio.get_running_loop()
     
+    meeting_id = None
+    db = None
+    try:
+        db = SessionLocal()
+        now = datetime.now()
+        new_meeting = Meeting(
+            title=f"实时会议 {now.strftime('%Y-%m-%d %H:%M')}",
+            date=now.strftime("%Y-%m-%d"),
+            time=now.strftime("%H:%M"),
+            duration="00:00",
+            type="realtime",
+            file_url=""
+        )
+        db.add(new_meeting)
+        db.commit()
+        db.refresh(new_meeting)
+        meeting_id = new_meeting.id
+        logger.info(f"Created Realtime Meeting: {meeting_id}")
+    except Exception as e:
+        logger.error(f"Failed to create meeting record: {e}")
+    finally:
+        if db:
+            db.close()
+    
     # Init Qwen Client
-    qwen_client = QwenRealtimeClient(websocket, loop)
+    qwen_client = QwenRealtimeClient(websocket, loop, meeting_id=meeting_id)
     qwen_client.connect()
     
     # Start Monitor
@@ -743,6 +1131,10 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         qwen_client.close()
         monitor_task.cancel()
+        
+        if qwen_client.meeting_id and os.path.exists(qwen_client.audio_path):
+            logger.info(f"Scheduling post-processing for meeting {qwen_client.meeting_id}")
+            loop.run_in_executor(None, process_realtime_recording, qwen_client.meeting_id, qwen_client.audio_path)
 
 @app.get("/")
 def read_root():

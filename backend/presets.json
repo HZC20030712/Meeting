@@ -1,0 +1,26 @@
+[
+  {
+    "id": "full_summary",
+    "name": "全面总结",
+    "description": "生成关键词、概要、章节、发言总结与问答回顾",
+    "skill_file": "full_summary.txt"
+  },
+  {
+    "id": "project_standard",
+    "name": "标准项目复盘",
+    "description": "提取待办事项、关键决策与项目里程碑",
+    "skill_file": "project_standard.txt"
+  },
+  {
+    "id": "deep_insight",
+    "name": "言外之意解读",
+    "description": "通过心理侧写与博弈论，挖掘对话背后的潜台词与风险",
+    "skill_file": "deep_insight.txt"
+  },
+  {
+    "id": "crossroads",
+    "name": "关键决策推演",
+    "description": "识别博弈节点，推演“平行宇宙”中的更优话术与结果",
+    "skill_file": "crossroads.txt"
+  }
+]

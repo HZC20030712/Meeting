@@ -10,3 +10,4 @@ requests
 sqlalchemy
 websocket-client
 python-multipart
+PyYAML

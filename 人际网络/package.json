@@ -1,5 +1,5 @@
 {
-  "name": "meetingai---ai-会议纪要助手",
+  "name": "executive-connect",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,11 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "lucide-react": "^0.562.0",
+    "react": "^19.2.3",
     "@google/genai": "^1.37.0",
     "framer-motion": "^12.26.2",
-    "lucide-react": "^0.562.0",
-    "react": "19.0.0",
-    "react-dom": "19.0.0"
+    "react-dom": "^19.2.3"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

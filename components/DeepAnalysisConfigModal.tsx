@@ -41,8 +41,10 @@ const DeepAnalysisConfigModal: React.FC<DeepAnalysisConfigModalProps> = ({
       fetch('http://localhost:8000/api/presets') // assuming localhost for dev
         .then(res => res.json())
         .then(data => {
-            setPresets(data);
-            if (data.length > 0) setSelectedPreset(data[0].id);
+            // Filter out 'full_summary' from Deep Analysis options
+            const filteredPresets = data.filter((p: Preset) => p.id !== 'full_summary');
+            setPresets(filteredPresets);
+            if (filteredPresets.length > 0) setSelectedPreset(filteredPresets[0].id);
         })
         .catch(err => console.error(err))
         .finally(() => setLoadingPresets(false));

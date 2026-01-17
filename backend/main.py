@@ -395,6 +395,27 @@ class AnalysisRequest(BaseModel):
     preset_id: str
     custom_requirement: str = ""
 
+class UpdateSpeakerRequest(BaseModel):
+    original_name: str
+    new_name: str
+
+@app.put("/api/meetings/{meeting_id}/speakers")
+def update_speaker_name(meeting_id: int, request: UpdateSpeakerRequest, db: Session = Depends(get_db)):
+    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+        
+    # Update segments
+    # Note: SQLite may not support UPDATE ... FROM syntax in older versions, so we use standard update
+    db.query(Segment).filter(
+        Segment.meeting_id == meeting_id,
+        Segment.speaker == request.original_name
+    ).update({Segment.speaker: request.new_name}, synchronize_session=False)
+    
+    db.commit()
+    
+    return {"status": "success", "message": f"Updated speaker {request.original_name} to {request.new_name}"}
+
 @app.get("/api/presets")
 def get_presets():
     try:
@@ -418,99 +439,110 @@ def load_prompt_file(filename: str) -> str:
         logger.error(f"Error loading prompt file {filename}: {e}")
         return ""
 
-@app.post("/api/meetings/{meeting_id}/analysis")
-async def analyze_meeting(meeting_id: int, request: AnalysisRequest, db: Session = Depends(get_db)):
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-    if not meeting:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-    
-    # 1. Load Preset and Modular Prompts
-    presets = get_presets()
-    preset = next((p for p in presets if p["id"] == request.preset_id), None)
-    if not preset:
-        raise HTTPException(status_code=400, detail="Invalid preset_id")
-    
-    base_prompt = load_prompt_file("base.txt")
-    skill_prompt = load_prompt_file(preset["skill_file"])
-    
-    # 2. Build Context
-    transcript_text = ""
-    for seg in meeting.segments:
-        # Check ignore
-        if seg.speaker in request.ignored_speakers:
-            continue
-            
-        # Map Name
-        display_name = request.speaker_map.get(seg.speaker, seg.speaker)
-        
-        # Format: [00:12] Speaker ID (Name): Content
-        transcript_text += f"[{seg.start_time}] {seg.speaker} ({display_name}): {seg.content}\n"
-    
-    # 3. Build Final Prompt
-    system_prompt = f"{base_prompt}\n\n---\n你的具体任务是：\n{skill_prompt}"
-    if request.custom_requirement:
-        system_prompt += f"\n\n---\n额外用户要求：\n{request.custom_requirement}"
-        
-    user_prompt = f"会议录音文本如下：\n{transcript_text}"
-    
-    # 4. Call Gemini (via OpenAI compatible client)
+def perform_analysis(meeting_id: int, preset_id: str, speaker_map: dict = {}, ignored_speakers: list = [], custom_requirement: str = ""):
+    """
+    Internal synchronous analysis function to be called by API or background tasks.
+    Creates its own DB session to avoid threading issues.
+    """
+    db = SessionLocal()
     try:
-        # Using the existing 'client' which is configured for Gemini
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+        if not meeting:
+            logger.error(f"Meeting {meeting_id} not found for analysis")
+            return None
+        
+        # 1. Load Preset
+        presets = get_presets()
+        preset = next((p for p in presets if p["id"] == preset_id), None)
+        if not preset:
+            logger.error(f"Invalid preset_id: {preset_id}")
+            return None
+        
+        base_prompt = load_prompt_file("base.txt")
+        skill_prompt = load_prompt_file(preset["skill_file"])
+        
+        # 2. Build Context
+        transcript_text = ""
+        for seg in meeting.segments:
+            if seg.speaker in ignored_speakers:
+                continue
+            display_name = speaker_map.get(seg.speaker, seg.speaker)
+            transcript_text += f"[{seg.start_time}] {seg.speaker} ({display_name}): {seg.content}\n"
+        
+        # 3. Build Prompt
+        system_prompt = f"{base_prompt}\n\n---\n你的具体任务是：\n{skill_prompt}"
+        if custom_requirement:
+            system_prompt += f"\n\n---\n额外用户要求：\n{custom_requirement}"
+        user_prompt = f"会议录音文本如下：\n{transcript_text}"
+        
+        # 4. Call Gemini
+        logger.info(f"Calling Gemini for meeting {meeting_id} with preset {preset_id}")
         response = client.chat.completions.create(
             model="gemini-3-flash-preview", 
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
-            ],
-            # response_format={"type": "json_object"} # Ensure JSON output
+            ]
         )
         
         content = response.choices[0].message.content
-        # Clean markdown code blocks if present (Gemini sometimes adds them even if asked not to)
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.endswith("```"):
-            content = content[:-3]
+        if content.startswith("```json"): content = content[7:]
+        if content.endswith("```"): content = content[:-3]
         content = content.strip()
             
-        # Validate JSON
         try:
             analysis_data = json.loads(content)
         except json.JSONDecodeError:
-            logger.error(f"Invalid JSON from Gemini: {content}")
-            raise HTTPException(status_code=500, detail="Analysis generation failed (Invalid JSON)")
+            logger.error(f"Invalid JSON from Gemini for meeting {meeting_id}")
+            return None
 
         # 5. Save Result
-        if request.preset_id == "chapters":
+        if preset_id == "chapters":
             meeting.chapters = json.dumps(analysis_data, ensure_ascii=False)
-        elif request.preset_id == "full_summary":
-            # Extract and save individual fields
+        elif preset_id == "full_summary":
             meeting.summary = analysis_data.get("abstract", "")
             meeting.keywords = json.dumps(analysis_data.get("keywords", []), ensure_ascii=False)
-            
-            # Save chapters separately
             chapters_data = {"chapters": analysis_data.get("chapters", [])}
             meeting.chapters = json.dumps(chapters_data, ensure_ascii=False)
-            
-            # Save speaker summaries and QA as analysis_result (or could be new columns)
-            # For now, we wrap them in a specific structure compatible with frontend
             full_summary_result = {
                 "mode": "full_summary",
                 "speaker_summaries": analysis_data.get("speaker_summaries", []),
                 "qa_pairs": analysis_data.get("qa_pairs", [])
             }
             meeting.analysis_result = json.dumps(full_summary_result, ensure_ascii=False)
-            
         else:
             meeting.analysis_result = json.dumps(analysis_data, ensure_ascii=False)
         
         db.commit()
-        
-        return {"status": "success", "result": analysis_data}
+        logger.info(f"Analysis completed for meeting {meeting_id}")
+        return analysis_data
         
     except Exception as e:
-        logger.error(f"Analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal analysis failed for meeting {meeting_id}: {e}")
+        return None
+    finally:
+        db.close()
+
+@app.post("/api/meetings/{meeting_id}/analysis")
+async def analyze_meeting(meeting_id: int, request: AnalysisRequest, db: Session = Depends(get_db)):
+    # Reuse the internal logic, but run in thread pool to avoid blocking async loop if synchronous
+    # Since perform_analysis creates its own session, we just pass ID
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, 
+        perform_analysis, 
+        meeting_id, 
+        request.preset_id, 
+        request.speaker_map, 
+        request.ignored_speakers, 
+        request.custom_requirement
+    )
+    
+    if result is None:
+         raise HTTPException(status_code=500, detail="Analysis failed (check logs)")
+         
+    return {"status": "success", "result": result}
+
 
 
 @app.post("/api/asr/file")
@@ -651,6 +683,11 @@ async def file_transcribe(file: UploadFile = File(...), db: Session = Depends(ge
     except Exception as e:
         logger.error(f"File Transcription Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Trigger auto-summary (Best Effort, non-blocking)
+        # Note: If we use BackgroundTasks here, it's better. But simple Thread also works.
+        if 'new_meeting' in locals() and new_meeting.id:
+            threading.Thread(target=perform_analysis, args=(new_meeting.id, "full_summary")).start()
 
 def _ms_to_mmss(ms: int | None) -> str | None:
     if ms is None:
@@ -750,6 +787,9 @@ def process_realtime_recording(meeting_id: int, file_path: str):
         
         db.commit()
         logger.info(f"Successfully re-processed meeting {meeting_id} with offline model ({len(new_segments)} segments)")
+        
+        # Trigger auto-summary
+        threading.Thread(target=perform_analysis, args=(meeting_id, "full_summary")).start()
         
     except Exception as e:
         logger.error(f"Post-processing failed for meeting {meeting_id}: {e}")

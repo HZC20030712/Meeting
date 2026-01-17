@@ -154,11 +154,12 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
     }
   }, [meeting.segments, localSegments.length]);
 
-  const handleUpdateSpeaker = (segmentId: string, originalSpeakerId: string | undefined, name: string, isGlobal: boolean) => {
+  const handleUpdateSpeaker = async (segmentId: string, originalSpeakerId: string | undefined, name: string, isGlobal: boolean) => {
     if (isGlobal) {
         // Global mode: Update the name in the map for the existing speaker ID
         const targetId = originalSpeakerId || 'unknown_speaker_default'; 
         
+        // Optimistic Update
         // If originalSpeakerId is undefined, we must update all segments that have undefined speaker to use targetId
         if (!originalSpeakerId) {
             setLocalSegments(prev => prev.map(seg => {
@@ -179,6 +180,19 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
         const newMap = { ...speakerMap, [targetId]: name };
         setSpeakerMap(newMap);
         meeting.speakerMap = newMap;
+        
+        // Persist to Backend
+        try {
+            await fetch(`http://localhost:8000/api/meetings/${meeting.id}/speakers`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ original_name: targetId, new_name: name })
+            });
+        } catch (e) {
+            console.error("Failed to persist speaker name", e);
+            // Optionally revert optimistic update or show toast
+        }
+
     } else {
         // Local mode: 
         // 1. Generate new unique speaker ID for this segment

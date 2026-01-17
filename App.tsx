@@ -6,8 +6,10 @@ import MeetingList from './components/MeetingList';
 import PersonaCapsules from './components/PersonaCapsules';
 import FolderGrid from './components/FolderGrid';
 import RecordingModal from './components/RecordingModal';
+import QuickCreateModal from './components/QuickCreateModal';
 import AIChatBar from './components/AIChatBar';
 import MeetingDetail from './components/MeetingDetail';
+import TodoList from './components/TodoList';
 import SocialNetworkRoot from './components/social/SocialNetworkRoot';
 import { AppTab, Meeting, Folder } from './types';
 import { useRecording } from './hooks/useRecording';
@@ -45,6 +47,7 @@ const INITIAL_MOCK_MEETINGS: Meeting[] = [
 const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
+  const [isQuickCreateOpen, setIsQuickCreateOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<AppTab>(AppTab.RECENT);
   const [meetings, setMeetings] = useState<Meeting[]>(INITIAL_MOCK_MEETINGS);
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
@@ -140,7 +143,7 @@ const App: React.FC = () => {
                     </span>
                   </div>
                   <button 
-                    onClick={() => setIsRecordingModalOpen(true)}
+                    onClick={() => setIsQuickCreateOpen(true)}
                     className="group relative px-6 py-2.5 rounded-full bg-white border border-[#EEEEEE] shadow-sm hover:shadow-md transition-all active:scale-95"
                   >
                     <div className="relative flex items-center gap-2 text-sm font-bold text-[#33a3dc]">
@@ -157,7 +160,10 @@ const App: React.FC = () => {
                     <SocialNetworkRoot />
                   </div>
                 ) : (
-                  <MeetingList meetings={meetings} onMeetingClick={setSelectedMeeting} />
+                  <>
+                    <MeetingList meetings={meetings} onMeetingClick={setSelectedMeeting} />
+                    <TodoList />
+                  </>
                 )}
               </section>
             </div>
@@ -175,6 +181,14 @@ const App: React.FC = () => {
               recording={recording}
             />
           </>
+        )}
+
+        {isQuickCreateOpen && (
+          <QuickCreateModal 
+            onClose={() => setIsQuickCreateOpen(false)}
+            onRecordStart={() => setIsRecordingModalOpen(true)}
+            onSuccess={addNewMeeting}
+          />
         )}
       </main>
     </div>

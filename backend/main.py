@@ -4,13 +4,14 @@ import asyncio
 import time
 from collections import deque
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import dashscope
 from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
 import openai
 from dotenv import load_dotenv
+import shutil
 
 # Load environment variables from .env.local in the parent directory
 env_path = Path(__file__).parent.parent / '.env.local'
@@ -59,6 +60,31 @@ async def chat_endpoint(request: ChatRequest):
     except Exception as e:
         print(f"Chat Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/transcribe-file")
+async def transcribe_file(file: UploadFile = File(...)):
+    temp_file_path = f"temp_{int(time.time())}_{file.filename}"
+    try:
+        # Save uploaded file
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # Transcribe using OpenAI compatible API (Whisper)
+        with open(temp_file_path, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=audio_file
+            )
+            
+        return {"text": transcription.text}
+        
+    except Exception as e:
+        print(f"Transcription Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Cleanup
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
 class ASRCallback(RecognitionCallback):
     def __init__(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop):

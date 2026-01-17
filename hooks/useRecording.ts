@@ -4,6 +4,7 @@ import { TranscriptSegment } from '../types';
 export const useRecording = () => {
   const [isRecording, setIsRecording] = useState(false);
   const isRecordingRef = useRef(false);
+  const initializingRef = useRef(false);
   const [duration, setDuration] = useState(0);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState('');
@@ -18,7 +19,10 @@ export const useRecording = () => {
   const startRecording = useCallback(async () => {
     try {
       // If already recording or initializing, don't start again
-      if (isRecordingRef.current || status === 'initializing') return;
+      if (isRecordingRef.current || status === 'initializing' || initializingRef.current) return;
+
+      // Lock initialization
+      initializingRef.current = true;
 
       // Reset state
       setSegments([]);
@@ -41,6 +45,7 @@ export const useRecording = () => {
           const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
           const audioContext = new AudioContextClass({ sampleRate: 16000 });
           audioContextRef.current = audioContext;
+          console.log(`[Audio] AudioContext created. Sample rate: ${audioContext.sampleRate}Hz`);
 
           const source = audioContext.createMediaStreamSource(stream);
           inputRef.current = source;
@@ -49,16 +54,24 @@ export const useRecording = () => {
           const processor = audioContext.createScriptProcessor(4096, 1, 1);
           processorRef.current = processor;
 
+          let packetCount = 0;
           processor.onaudioprocess = (e) => {
             if (ws.readyState === WebSocket.OPEN) {
               const inputData = e.inputBuffer.getChannelData(0);
               // Convert Float32 to Int16 PCM
               const pcmData = new Int16Array(inputData.length);
+              let maxVal = 0;
               for (let i = 0; i < inputData.length; i++) {
                 const s = Math.max(-1, Math.min(1, inputData[i]));
+                maxVal = Math.max(maxVal, Math.abs(s));
                 pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
               }
               ws.send(pcmData.buffer);
+              
+              packetCount++;
+              if (packetCount % 50 === 0) {
+                  console.log(`[Audio] Sent ${packetCount} packets. Max amplitude: ${maxVal.toFixed(4)}`);
+              }
             }
           };
 
@@ -72,9 +85,11 @@ export const useRecording = () => {
 
           setIsRecording(true);
           isRecordingRef.current = true;
+          initializingRef.current = false; // Unlock
           setStatus('recording');
         } catch (err) {
           console.error('Audio Error:', err);
+          initializingRef.current = false; // Unlock on error
           setStatus('error');
         }
       };
@@ -150,6 +165,7 @@ export const useRecording = () => {
 
       ws.onerror = (e) => {
         console.error('WebSocket Error:', e);
+        initializingRef.current = false; // Unlock on error
         setStatus('error');
       };
       
@@ -157,12 +173,14 @@ export const useRecording = () => {
         console.log('WebSocket Closed');
         setIsRecording(false);
         isRecordingRef.current = false;
+        initializingRef.current = false; // Ensure unlocked
         // Don't change status to finished here automatically, as it might be a network issue?
         // But for now, let's assume it's stopped.
       };
 
     } catch (err) {
       console.error('Setup Error:', err);
+      initializingRef.current = false; // Unlock on error
       setStatus('error');
     }
   }, []);

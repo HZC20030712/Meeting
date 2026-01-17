@@ -831,7 +831,7 @@ class QwenRealtimeClient:
         self.is_paused = False
 
     def connect(self):
-        url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+        url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime"
         headers = [
             f"Authorization: Bearer {DASHSCOPE_API_KEY}",
             "OpenAI-Beta: realtime=v1"
@@ -855,11 +855,17 @@ class QwenRealtimeClient:
         session_event = {
             "type": "session.update",
             "session": {
-                "model": "qwen3-asr-flash-realtime",
+                "modalities": ["text"],
                 "input_audio_format": "pcm",
-                "input_audio_rate": 16000,
-                "response_format": "text",
-                "enable_server_vad": True
+                "sample_rate": 16000,
+                "input_audio_transcription": {
+                    "language": "zh"
+                },
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.0,
+                    "silence_duration_ms": 400
+                }
             }
         }
         ws.send(json.dumps(session_event))
@@ -908,23 +914,24 @@ class QwenRealtimeClient:
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-            # logger.debug(f"[QwenWS] Recv: {data}")
+            if os.getenv("ASR_DEBUG") == "1":
+                logger.info(f"[QwenWS] Recv type={data.get('type')}")
             
             # Handle transcription events
-            if data.get("type") == "response.audio_transcript.delta":
-                 text = data.get("delta", "")
-                 self._send_to_frontend(text, is_final=False)
-            elif data.get("type") == "response.audio_transcript.done":
-                 text = data.get("transcript", "")
-                 self._send_to_frontend(text, is_final=True)
-                 if text.strip():
-                     self.context_buffer.append((time.time(), text))
-                     
-                     # Save to DB
-                     self._save_segment_to_db(text)
-                     
-                     self.last_text_time = time.time()
-                     self.suggestion_generated = False
+            event_type = data.get("type")
+            if event_type in {"response.audio_transcript.delta", "conversation.item.input_audio_transcription.text"}:
+                text = data.get("delta") or data.get("stash") or data.get("transcript") or ""
+                if text:
+                    self._send_to_frontend(text, is_final=False)
+            elif event_type in {"response.audio_transcript.done", "conversation.item.input_audio_transcription.completed", "session.finished"}:
+                text = data.get("transcript") or data.get("text") or ""
+                if text:
+                    self._send_to_frontend(text, is_final=True)
+                    if text.strip():
+                        self.context_buffer.append((time.time(), text))
+                        self._save_segment_to_db(text)
+                        self.last_text_time = time.time()
+                        self.suggestion_generated = False
             
             # Fallback/Other event types handling...
             
@@ -935,8 +942,8 @@ class QwenRealtimeClient:
         logger.error(f"[QwenWS] Error: {error}")
         self.is_connected = False
 
-    def on_close(self, ws, *args):
-        logger.info("[QwenWS] Closed")
+    def on_close(self, ws, close_status_code=None, close_msg=None):
+        logger.info(f"[QwenWS] Closed: {close_status_code} - {close_msg}")
         self.is_connected = False
 
     def send_audio(self, audio_bytes: bytes):
@@ -1075,10 +1082,14 @@ async def websocket_endpoint(websocket: WebSocket):
     # Start Monitor
     monitor_task = asyncio.create_task(monitor_silence(qwen_client))
     
+    packet_count = 0
     try:
         while True:
             message = await websocket.receive()
             if "bytes" in message:
+                packet_count += 1
+                if packet_count % 50 == 0:
+                     logger.info(f"Received {packet_count} audio packets from frontend")
                 if not qwen_client.is_paused:
                     qwen_client.send_audio(message["bytes"])
             elif "text" in message:

@@ -3,24 +3,34 @@ import json
 import asyncio
 import time
 from collections import deque
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import dashscope
 from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
 import openai
+from dotenv import load_dotenv
 
-# Load environment variables if needed, but we have the key provided
-# from dotenv import load_dotenv
-# load_dotenv()
+# Load environment variables from .env.local in the parent directory
+env_path = Path(__file__).parent.parent / '.env.local'
+load_dotenv(dotenv_path=env_path)
 
-# Use the key provided by the user
-dashscope.api_key = "sk-aa664b4c5a664cd699b0515f4dbeda7d"
+# Configure DashScope
+dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
+if not dashscope.api_key:
+    print("Warning: DASHSCOPE_API_KEY not found in environment variables.")
 
 # Configure OpenAI client for Gemini
+api_key = os.getenv("OPENAI_API_KEY")
+base_url = os.getenv("OPENAI_BASE_URL", "https://aihubmix.com/v1")
+
+if not api_key:
+    print("Warning: OPENAI_API_KEY not found in environment variables.")
+
 client = openai.OpenAI(
-    api_key="sk-AkMYAkSiUOpnYPR1D9E20fCeA690481e80D37b245f520817",
-    base_url="https://aihubmix.com/v1"
+    api_key=api_key,
+    base_url=base_url
 )
 
 app = FastAPI()

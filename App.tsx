@@ -129,7 +129,7 @@ const App: React.FC = () => {
                 </section>
               )}
 
-              <section className="max-w-5xl mx-auto md:mx-0">
+              <section className="w-full max-w-none">
                 <div className="flex items-center justify-between mb-8 px-1">
                   <div className="flex flex-col">
                     <h2 className="text-2xl font-black text-[#1A1A1A] tracking-tighter">

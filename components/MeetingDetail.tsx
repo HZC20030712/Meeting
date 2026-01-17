@@ -244,11 +244,7 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium cursor-pointer hover:bg-blue-100 transition-colors">
-            <i className="fa-solid fa-cloud-arrow-up"></i>
-            <span>导入录音文件</span>
-            <input type="file" accept="audio/*" className="hidden" onChange={handleFileUpload} />
-          </label>
+
           <button className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors">
             <i className="fa-solid fa-share-nodes"></i>
           </button>

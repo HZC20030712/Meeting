@@ -33,7 +33,7 @@ const MeetingList: React.FC<MeetingListProps> = ({ meetings, onMeetingClick }) =
             <div className="h-[1px] flex-1 bg-gray-100/50"></div>
           </div>
           
-          <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {(groups[date] as Meeting[]).map((meeting) => (
               <div 
                 key={meeting.id}

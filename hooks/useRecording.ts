@@ -45,8 +45,8 @@ export const useRecording = () => {
           const source = audioContext.createMediaStreamSource(stream);
           inputRef.current = source;
           
-          // Buffer size 4096 is a good balance
-          const processor = audioContext.createScriptProcessor(4096, 1, 1);
+          // Buffer size 1024 for lower latency (approx 64ms at 16kHz)
+          const processor = audioContext.createScriptProcessor(1024, 1, 1);
           processorRef.current = processor;
 
           processor.onaudioprocess = (e) => {
@@ -186,11 +186,16 @@ export const useRecording = () => {
     
     if (websocketRef.current) {
       websocketRef.current.close();
+      websocketRef.current = null;
     }
     setStatus('finished');
   }, []);
 
   const resetRecording = useCallback(() => {
+    if (websocketRef.current) {
+      websocketRef.current.close();
+      websocketRef.current = null;
+    }
     setSegments([]);
     setCurrentTranscript('');
     setDuration(0);

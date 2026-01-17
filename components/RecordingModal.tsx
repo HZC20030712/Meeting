@@ -84,8 +84,11 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess, rec
           <i className="fa-solid fa-compress text-sm"></i>
         </button>
         <div className="flex items-center gap-2">
-          <span className="text-base font-bold text-gray-900">
-            {status === 'initializing' ? '连接中...' : status === 'recording' ? '正在录音' : status === 'paused' ? '已暂停' : '录音停止'}
+          <span className={`text-base font-bold ${status === 'error' ? 'text-red-600' : 'text-gray-900'}`}>
+            {status === 'initializing' ? '连接中...' : 
+             status === 'recording' ? '正在录音' : 
+             status === 'paused' ? '已暂停' : 
+             status === 'error' ? '连接错误 (请检查控制台)' : '录音停止'}
           </span>
           {status === 'recording' && <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>}
         </div>

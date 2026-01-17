@@ -8,6 +8,7 @@ import threading
 import hashlib
 import shutil
 import subprocess
+import ssl
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +24,18 @@ from dashscope.audio.asr import Transcription
 
 # --- 加载环境变量 ---
 from dotenv import load_dotenv
+# Explicitly load .env.local from project root
+env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env.local")
+load_dotenv(dotenv_path=env_path)
+# Also load .env if it exists (for compatibility)
 load_dotenv()
+
+# Check API Key
+if not os.getenv("DASHSCOPE_API_KEY"):
+    logger.error("DASHSCOPE_API_KEY is missing!")
+else:
+    key = os.getenv("DASHSCOPE_API_KEY")
+    logger.info(f"DASHSCOPE_API_KEY loaded: {key[:6]}******")
 
 # --- 日志配置 ---
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
@@ -508,13 +520,16 @@ class QwenRealtimeClient:
         self.suggestion_generated = False
         self.generating = False
         self.is_paused = False
+        self.model = "qwen3-asr-flash-realtime"
+        self._seen_types: set[str] = set()
 
     def connect(self):
-        url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+        url = f"wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model={self.model}"
         headers = [
             f"Authorization: Bearer {DASHSCOPE_API_KEY}",
             "OpenAI-Beta: realtime=v1"
         ]
+        logger.info(f"Connecting to Qwen Realtime API: {url}")
         self.ws = websocket.WebSocketApp(
             url,
             header=headers,
@@ -523,7 +538,10 @@ class QwenRealtimeClient:
             on_error=self.on_error,
             on_close=self.on_close
         )
-        self.thread = threading.Thread(target=self.ws.run_forever)
+        self.thread = threading.Thread(
+            target=self.ws.run_forever, 
+            kwargs={"sslopt": {"cert_reqs": ssl.CERT_NONE}}
+        )
         self.thread.start()
 
     def on_open(self, ws):
@@ -532,13 +550,20 @@ class QwenRealtimeClient:
         
         # Init Session
         session_event = {
+            "event_id": f"event_{int(time.time() * 1000)}",
             "type": "session.update",
             "session": {
-                "model": "qwen3-asr-flash-realtime",
+                "modalities": ["text"],
                 "input_audio_format": "pcm",
-                "input_audio_rate": 16000,
-                "response_format": "text",
-                "enable_server_vad": True
+                "sample_rate": 16000,
+                "input_audio_transcription": {
+                    "language": "zh"
+                },
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.2,
+                    "silence_duration_ms": 800
+                }
             }
         }
         ws.send(json.dumps(session_event))
@@ -546,21 +571,38 @@ class QwenRealtimeClient:
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-            # logger.debug(f"[QwenWS] Recv: {data}")
+            event_type = data.get("type")
+            if isinstance(event_type, str) and event_type and event_type not in self._seen_types:
+                self._seen_types.add(event_type)
+                logger.info(f"[QwenWS] Event type: {event_type}")
             
             # Handle transcription events
             # Note: Actual event names depend on Qwen Realtime protocol (similar to OpenAI Realtime)
             # Adjust these based on actual response structure
-            if data.get("type") == "response.audio_transcript.delta":
-                 text = data.get("delta", "")
-                 self._send_to_frontend(text, is_final=False)
-            elif data.get("type") == "response.audio_transcript.done":
-                 text = data.get("transcript", "")
-                 self._send_to_frontend(text, is_final=True)
-                 if text.strip():
-                     self.context_buffer.append((time.time(), text))
-                     self.last_text_time = time.time()
-                     self.suggestion_generated = False
+            if isinstance(event_type, str):
+                if event_type in ("response.audio_transcript.delta", "response.audio_transcript.done"):
+                    if event_type.endswith(".delta"):
+                        text = data.get("delta", "")
+                        if isinstance(text, str) and text:
+                            self.current_sentence_partial += text
+                            self._send_to_frontend(self.current_sentence_partial, is_final=False)
+                    else:
+                        text = data.get("transcript", "")
+                        self.current_sentence_partial = ""
+                        if isinstance(text, str) and text:
+                            self._send_to_frontend(text, is_final=True)
+                            self.context_buffer.append((time.time(), text))
+                            self.last_text_time = time.time()
+                            self.suggestion_generated = False
+                elif "transcript" in event_type:
+                    text = data.get("delta") if event_type.endswith(".delta") else (data.get("transcript") or data.get("text"))
+                    if isinstance(text, str) and text:
+                        is_final = bool(event_type.endswith(".done") or event_type.endswith(".completed"))
+                        self._send_to_frontend(text, is_final=is_final)
+                        if is_final:
+                            self.context_buffer.append((time.time(), text))
+                            self.last_text_time = time.time()
+                            self.suggestion_generated = False
             
             # Fallback/Other event types handling...
             
@@ -581,6 +623,7 @@ class QwenRealtimeClient:
         # Encode audio to base64
         encoded = base64.b64encode(audio_bytes).decode("utf-8")
         event = {
+            "event_id": f"event_{int(time.time() * 1000)}",
             "type": "input_audio_buffer.append",
             "audio": encoded
         }
@@ -654,7 +697,7 @@ async def monitor_silence(client: QwenRealtimeClient):
             # We care about Backend<->Frontend for sending suggestions
             
             now = time.time()
-            if (now - client.last_text_time > 3.5) and (not client.suggestion_generated) and (not client.generating) and (not client.is_paused):
+            if (now - client.last_text_time > 3.5) and (not client.suggestion_generated) and (not client.generating) and (not client.is_paused) and len(client.context_buffer) > 0:
                 if client.is_connected: # Only trigger if session is active
                     logger.info("Silence detected, triggering suggestion...")
                     asyncio.create_task(generate_suggestion(client))
@@ -663,7 +706,9 @@ async def monitor_silence(client: QwenRealtimeClient):
 
 @app.websocket("/ws/asr")
 async def websocket_endpoint(websocket: WebSocket):
+    logger.info("Frontend WebSocket connection attempt...")
     await websocket.accept()
+    logger.info("Frontend WebSocket connected.")
     loop = asyncio.get_running_loop()
     
     # Init Qwen Client

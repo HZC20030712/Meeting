@@ -47,7 +47,7 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess, rec
     const fullText = segments.map(s => s.type === 'user' ? s.content : '').join('') + currentTranscript;
     
     const newMeeting: Meeting = {
-      id: Date.now().toString(),
+      id: Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9),
       title: fullText.slice(0, 10) || '新录音',
       host: 'Me',
       duration: formatTime(duration),

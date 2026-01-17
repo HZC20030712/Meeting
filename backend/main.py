@@ -2,25 +2,36 @@ import os
 import json
 import asyncio
 import time
+import uuid
 from collections import deque
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 import dashscope
 from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
 import openai
 
-# Load environment variables if needed, but we have the key provided
-# from dotenv import load_dotenv
-# load_dotenv()
+# --- 加载环境变量 ---
+# 请确保在项目根目录下的 .env 文件中正确配置了以下变量：
+# - DASHSCOPE_API_KEY: 阿里灵积平台密钥
+# - GEMINI_API_KEY: OpenAI 兼容接口密钥
+# - GEMINI_BASE_URL: API 基础地址
+# - VOLC_APP_KEY/VOLC_ACCESS_KEY: 火山引擎密钥
+# - PUBLIC_BASE_URL: 后端服务的公网访问地址
+from dotenv import load_dotenv
+load_dotenv()
 
-# Use the key provided by the user
-dashscope.api_key = "sk-aa664b4c5a664cd699b0515f4dbeda7d"
+# --- SDK 配置 ---
+# 配置阿里 DashScope (用于实时语音识别)
+dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 
-# Configure OpenAI client for Gemini
+# 配置 OpenAI 客户端 (用于 Gemini LLM 对话)
 client = openai.OpenAI(
-    api_key="sk-AkMYAkSiUOpnYPR1D9E20fCeA690481e80D37b245f520817",
-    base_url="https://aihubmix.com/v1"
+    api_key=os.getenv("GEMINI_API_KEY"),
+    base_url=os.getenv("GEMINI_BASE_URL")
 )
 
 app = FastAPI()
@@ -32,6 +43,90 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+VOLC_SUBMIT_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
+VOLC_QUERY_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
+VOLC_RESOURCE_ID = os.getenv("VOLC_RESOURCE_ID", "volc.bigasr.auc")
+VOLC_APP_KEY = os.getenv("VOLC_APP_KEY")
+VOLC_ACCESS_KEY = os.getenv("VOLC_ACCESS_KEY")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
+
+TASK_LOGID: dict[str, str] = {}
+
+def _volc_request(url: str, headers: dict, body: dict | None) -> tuple[dict, dict]:
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            resp_body = resp.read() or b"{}"
+            try:
+                parsed = json.loads(resp_body.decode("utf-8"))
+            except Exception:
+                parsed = {"raw": resp_body.decode("utf-8", errors="ignore")}
+            return parsed, dict(resp.headers)
+    except HTTPError as e:
+        raw = e.read() if hasattr(e, "read") else b""
+        raise HTTPException(status_code=502, detail={"error": "volc_http_error", "status": e.code, "body": raw.decode("utf-8", errors="ignore")})
+    except URLError as e:
+        raise HTTPException(status_code=502, detail={"error": "volc_url_error", "reason": str(e.reason)})
+
+def _require_volc_creds() -> None:
+    if not VOLC_APP_KEY or not VOLC_ACCESS_KEY:
+        raise HTTPException(status_code=500, detail="Missing VOLC_APP_KEY or VOLC_ACCESS_KEY env vars")
+    if not PUBLIC_BASE_URL:
+        raise HTTPException(status_code=500, detail="Missing PUBLIC_BASE_URL env var (publicly reachable base URL for uploaded files)")
+
+def _ms_to_mmss(ms: int | None) -> str | None:
+    if ms is None:
+        return None
+    seconds = max(0, int(ms // 1000))
+    m = seconds // 60
+    s = seconds % 60
+    return f"{m:02d}:{s:02d}"
+
+def _extract_speaker(utt: dict) -> str | None:
+    additions = utt.get("additions") if isinstance(utt, dict) else None
+    if isinstance(additions, dict):
+        speaker = additions.get("speaker") or additions.get("speaker_id")
+        if speaker is not None:
+            return str(speaker)
+    for key in ("speaker", "speaker_id", "speakerId"):
+        if key in utt and utt[key] is not None:
+            return str(utt[key])
+    return None
+
+def _extract_segments_from_auc_result(payload: dict) -> tuple[str, list[dict]]:
+    result = payload.get("result")
+    if isinstance(result, list) and result:
+        result = result[0]
+    if not isinstance(result, dict):
+        return "", []
+    full_text = result.get("text") or ""
+    utterances = result.get("utterances") or []
+    segments: list[dict] = []
+    if isinstance(utterances, list):
+        for idx, utt in enumerate(utterances):
+            if not isinstance(utt, dict):
+                continue
+            text = (utt.get("text") or "").strip()
+            if not text:
+                continue
+            segments.append({
+                "id": f"utt-{idx}-{uuid.uuid4().hex[:8]}",
+                "type": "user",
+                "content": text,
+                "startTime": _ms_to_mmss(utt.get("start_time")),
+                "endTime": _ms_to_mmss(utt.get("end_time")),
+                "speaker": _extract_speaker(utt),
+            })
+    return str(full_text), segments
+
+class AucQueryRequest(BaseModel):
+    task_id: str
 
 class ChatRequest(BaseModel):
     message: str
@@ -49,6 +144,75 @@ async def chat_endpoint(request: ChatRequest):
     except Exception as e:
         print(f"Chat Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/asr/auc/submit")
+async def auc_submit(file: UploadFile = File(...)):
+    _require_volc_creds()
+    filename = file.filename or "audio"
+    ext = os.path.splitext(filename)[1].lower().lstrip(".") or "wav"
+    if ext not in {"raw", "wav", "mp3", "ogg"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio format: {ext}. Use wav/mp3/ogg/raw.")
+    local_name = f"{uuid.uuid4().hex}.{ext}"
+    local_path = os.path.join(UPLOAD_DIR, local_name)
+    content = await file.read()
+    with open(local_path, "wb") as f:
+        f.write(content)
+    audio_url = f"{PUBLIC_BASE_URL.rstrip('/')}/uploads/{local_name}"
+
+    task_id = str(uuid.uuid4())
+    headers = {
+        "Content-Type": "application/json",
+        "X-Api-App-Key": VOLC_APP_KEY,
+        "X-Api-Access-Key": VOLC_ACCESS_KEY,
+        "X-Api-Resource-Id": VOLC_RESOURCE_ID,
+        "X-Api-Request-Id": task_id,
+        "X-Api-Sequence": "-1",
+    }
+
+    hotwords = ["FastAPI", "uvicorn", "WebSocket", "TypeScript", "React", "Vite", "ASR", "API", "JSON", "HTTP", "CORS"]
+    body = {
+        "user": {"uid": "demo"},
+        "audio": {"url": audio_url, "format": ext},
+        "request": {
+            "model_name": "bigmodel",
+            "model_version": "400",
+            "enable_itn": True,
+            "enable_punc": True,
+            "enable_ddc": False,
+            "show_utterances": True,
+            "enable_speaker_info": True,
+            "corpus": {
+                "context": json.dumps({"hotwords": [{"word": w} for w in hotwords]}, ensure_ascii=False)
+            }
+        }
+    }
+
+    payload, resp_headers = _volc_request(VOLC_SUBMIT_URL, headers, body)
+    logid = resp_headers.get("X-Tt-Logid") or resp_headers.get("x-tt-logid") or ""
+    TASK_LOGID[task_id] = logid
+    status_code = resp_headers.get("X-Api-Status-Code") or resp_headers.get("x-api-status-code")
+    message = resp_headers.get("X-Api-Message") or resp_headers.get("x-api-message")
+    return {"task_id": task_id, "logid": logid, "status_code": status_code, "message": message, "audio_url": audio_url, "payload": payload}
+
+@app.post("/api/asr/auc/query")
+async def auc_query(request: AucQueryRequest):
+    _require_volc_creds()
+    task_id = request.task_id
+    headers = {
+        "Content-Type": "application/json",
+        "X-Api-App-Key": VOLC_APP_KEY,
+        "X-Api-Access-Key": VOLC_ACCESS_KEY,
+        "X-Api-Resource-Id": VOLC_RESOURCE_ID,
+        "X-Api-Request-Id": task_id,
+    }
+    logid = TASK_LOGID.get(task_id)
+    if logid:
+        headers["X-Tt-Logid"] = logid
+    payload, resp_headers = _volc_request(VOLC_QUERY_URL, headers, {})
+    status_code = resp_headers.get("X-Api-Status-Code") or resp_headers.get("x-api-status-code")
+    message = resp_headers.get("X-Api-Message") or resp_headers.get("x-api-message")
+    full_text, segments = _extract_segments_from_auc_result(payload)
+    return {"task_id": task_id, "logid": resp_headers.get("X-Tt-Logid") or resp_headers.get("x-tt-logid") or logid, "status_code": status_code, "message": message, "text": full_text, "segments": segments, "raw": payload}
 
 class ASRCallback(RecognitionCallback):
     def __init__(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop):
@@ -71,6 +235,10 @@ class ASRCallback(RecognitionCallback):
         # Send the result back to the client via WebSocket
         try:
             sentence = result.get_sentence()
+            # DEBUG LOGGING for Speaker Diarization
+            print(f"[DEBUG] Raw sentence data: {sentence}")
+            if hasattr(sentence, '__dict__'):
+                print(f"[DEBUG] Sentence attrs: {sentence.__dict__}")
             
             # Robustly extract text
             text = ""
@@ -100,6 +268,18 @@ class ASRCallback(RecognitionCallback):
                 if isinstance(sentence, dict):
                      is_final = sentence.get('is_sentence_end', False)
 
+            # Extract speaker if available
+            speaker = None
+            try:
+                if isinstance(sentence, dict):
+                    speaker = sentence.get('speaker_id') or sentence.get('speaker')
+                elif hasattr(sentence, 'speaker_id'):
+                    speaker = sentence.speaker_id
+                elif hasattr(sentence, 'speaker'):
+                    speaker = sentence.speaker
+            except Exception:
+                pass
+
             if is_final and text.strip():
                 # Add to context buffer
                 self.context_buffer.append((time.time(), text))
@@ -111,7 +291,8 @@ class ASRCallback(RecognitionCallback):
             payload = {
                 "type": "transcript", # Explicit type
                 "text": text,
-                "is_final": is_final
+                "is_final": is_final,
+                "speaker": speaker
             }
             # Schedule the coroutine in the main event loop
             asyncio.run_coroutine_threadsafe(
@@ -160,8 +341,8 @@ async def generate_suggestion(callback: ASRCallback):
                 # I'll use AsyncOpenAI to be proper.
                 
                 async_client = openai.AsyncOpenAI(
-                    api_key="sk-AkMYAkSiUOpnYPR1D9E20fCeA690481e80D37b245f520817",
-                    base_url="https://aihubmix.com/v1"
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    base_url=os.getenv("GEMINI_BASE_URL", "https://aihubmix.com/v1")
                 )
 
                 stream = await async_client.chat.completions.create(
@@ -235,7 +416,8 @@ async def websocket_endpoint(websocket: WebSocket):
         model='fun-asr-realtime',
         format='pcm',
         sample_rate=16000,
-        callback=callback
+        callback=callback,
+        enable_speaker_diarization=True # Attempt to enable speaker diarization
     )
     
     try:

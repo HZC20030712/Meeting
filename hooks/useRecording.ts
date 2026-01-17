@@ -91,7 +91,8 @@ export const useRecording = () => {
                 setSegments(prev => [...prev, {
                   id: Date.now().toString(),
                   type: 'user',
-                  content: data.text
+                  content: data.text,
+                  speaker: data.speaker || undefined
                 }]);
               }
               setCurrentTranscript('');
@@ -104,7 +105,7 @@ export const useRecording = () => {
           else if (data.type === 'status' && data.content === 'thinking') {
              // Append a new suggestion segment in 'thinking' state
              setSegments(prev => [...prev, {
-               id: 'suggestion-' + Date.now(),
+               id: 'suggestion-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
                type: 'suggestion',
                content: '',
                status: 'thinking'

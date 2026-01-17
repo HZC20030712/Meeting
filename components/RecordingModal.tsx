@@ -56,7 +56,7 @@ const RecordingModal: React.FC<RecordingModalProps> = ({ onClose, onSuccess, rec
       date: '刚刚',
       type: 'other',
       segments: [...segments, ...(currentTranscript ? [{
-        id: 'final-pending',
+        id: 'final-' + Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9),
         type: 'user' as const,
         content: currentTranscript,
         startTime: formatTime(duration)

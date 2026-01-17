@@ -196,37 +196,67 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // TODO: Add Loading State
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/asr/file', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Transcription failed');
+
+      const data = await response.json();
+      if (data.status === 'succeeded' && data.segments) {
+         setLocalSegments(data.segments);
+         // Reset map if needed or merge
+      }
+    } catch (error) {
+      console.error("Upload error:", error);
+      alert("上传转写失败，请检查后端日志");
+    }
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-white">
+    <div className="h-screen bg-white flex flex-col">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-white z-10">
+      <div className="h-14 border-b border-gray-100 flex items-center justify-between px-4 bg-white/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="flex items-center gap-4">
           <button 
             onClick={onBack}
-            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors text-gray-600"
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors"
           >
             <i className="fa-solid fa-arrow-left"></i>
           </button>
-          <h1 className="text-xl font-bold text-gray-800">{meeting.title}</h1>
+          <div>
+            <h1 className="text-base font-medium text-gray-900">{meeting.title}</h1>
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <span>{meeting.date}</span>
+              <span>·</span>
+              <span>{meeting.duration}</span>
+            </div>
+          </div>
         </div>
         <div className="flex items-center gap-3">
-          <button className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors">
-            <i className="fa-solid fa-ellipsis"></i>
-          </button>
-          <button className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors">
-            <i className="fa-regular fa-star"></i>
-          </button>
-          <button className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors">
-            <i className="fa-regular fa-file-lines"></i>
-          </button>
-          <button className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors">
+          <label className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium cursor-pointer hover:bg-blue-100 transition-colors">
+            <i className="fa-solid fa-cloud-arrow-up"></i>
+            <span>导入录音文件</span>
+            <input type="file" accept="audio/*" className="hidden" onChange={handleFileUpload} />
+          </label>
+          <button className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors">
             <i className="fa-solid fa-share-nodes"></i>
           </button>
-          <button className="px-4 py-1.5 bg-[#F0F9FF] text-[#33a3dc] rounded-lg text-sm font-semibold hover:bg-[#E1F3FF] transition-colors flex items-center gap-2">
-            <i className="fa-solid fa-download"></i> 导出
+          <button className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors">
+            <i className="fa-solid fa-ellipsis"></i>
           </button>
         </div>
-      </header>
+      </div>
 
       <div className="flex flex-1 overflow-hidden">
         {/* Right Column: AI Analysis (Moved to Left) */}

@@ -9,19 +9,182 @@ interface MeetingDetailProps {
 
 type TabType = 'guide' | 'mindmap' | 'notes';
 
+const SpeakerTag: React.FC<{
+  speakerId: string | undefined;
+  speakerMap: Record<string, string>;
+  onUpdateName: (speakerId: string | undefined, name: string, isGlobal: boolean) => void;
+}> = ({ speakerId, speakerMap, onUpdateName }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [tempName, setTempName] = useState('');
+  const [editMode, setEditMode] = useState<'global' | 'local'>('global');
+
+  const displayName =
+    (speakerId ? speakerMap[speakerId] : undefined) ||
+    (speakerId ? undefined : speakerMap['unknown_speaker_default']) ||
+    speakerId ||
+    '未知发言人';
+
+  const handleStartEdit = () => {
+    setTempName(displayName);
+    setIsEditing(true);
+  };
+
+  const handleSave = () => {
+    if (tempName.trim()) {
+      onUpdateName(speakerId, tempName.trim(), editMode === 'global');
+    }
+    setIsEditing(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handleSave();
+    if (e.key === 'Escape') setIsEditing(false);
+  };
+
+  if (isEditing) {
+    return (
+      <div className="relative inline-block">
+        <div className="absolute top-0 left-0 z-50 bg-white shadow-lg rounded-lg border border-blue-100 p-3 min-w-[200px] animate-in fade-in zoom-in-95 duration-200">
+          <input
+            autoFocus
+            className="text-sm text-gray-800 font-medium border border-blue-300 rounded px-2 py-1 w-full outline-none focus:ring-2 focus:ring-blue-400 mb-2"
+            value={tempName}
+            onChange={(e) => setTempName(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onClick={(e) => e.stopPropagation()}
+            placeholder="输入发言人姓名"
+          />
+          <div className="flex flex-col gap-1 mb-3">
+             <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:bg-gray-50 p-1 rounded">
+               <input 
+                 type="radio" 
+                 name="editMode" 
+                 checked={editMode === 'global'} 
+                 onChange={() => setEditMode('global')}
+                 className="text-blue-500 focus:ring-blue-400"
+               />
+               <span>修改所有同名发言人 (全局)</span>
+             </label>
+             <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:bg-gray-50 p-1 rounded">
+               <input 
+                 type="radio" 
+                 name="editMode" 
+                 checked={editMode === 'local'} 
+                 onChange={() => setEditMode('local')}
+                 className="text-blue-500 focus:ring-blue-400"
+               />
+               <span>仅修改此处 (局部)</span>
+             </label>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button 
+              onClick={(e) => { e.stopPropagation(); setIsEditing(false); }}
+              className="px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 rounded"
+            >
+              取消
+            </button>
+            <button 
+              onClick={(e) => { e.stopPropagation(); handleSave(); }}
+              className="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 shadow-sm"
+            >
+              保存
+            </button>
+          </div>
+        </div>
+        {/* Backdrop to close on click outside */}
+        <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setIsEditing(false); }}></div>
+      </div>
+    );
+  }
+
+  return (
+    <span 
+      className="text-xs text-gray-400 font-medium cursor-pointer hover:text-blue-500 hover:underline decoration-dashed underline-offset-2 transition-colors relative"
+      onClick={handleStartEdit}
+      title="点击修改发言人姓名"
+    >
+      {displayName}
+    </span>
+  );
+};
+
 const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
   const [activeTab, setActiveTab] = useState<TabType>('guide');
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [speakerMap, setSpeakerMap] = useState<Record<string, string>>(meeting.speakerMap || {});
+  
+  // Use local state for segments to allow local edits
+  const [localSegments, setLocalSegments] = useState<TranscriptSegment[]>(
+    meeting.segments || [
+      { id: '1', type: 'user', content: '好的。', startTime: '01:12:09', speaker: '发言人 2' },
+      { id: '2', type: 'user', content: '你跟他们聊，我们跟他聊聊。', startTime: '01:12:13', speaker: '发言人 4' },
+      { id: '3', type: 'user', content: '前面咨询你这两个岗位。', startTime: '01:12:16', speaker: '发言人 1' },
+      { id: '4', type: 'user', content: '你先自己先聊。好的，没问题。', startTime: '01:12:18', speaker: '发言人 2' },
+      { id: '5', type: 'user', content: '好，拜拜。好，再见蔡总。', startTime: '01:12:20', speaker: '发言人 4' },
+    ]
+  );
 
-  // Mock data if segments are missing (for old mock meetings)
-  const segments: TranscriptSegment[] = meeting.segments || [
-    { id: '1', type: 'user', content: '好的。', startTime: '01:12:09', speaker: '发言人 2' },
-    { id: '2', type: 'user', content: '你跟他们聊，我们跟他聊聊。', startTime: '01:12:13', speaker: '发言人 4' },
-    { id: '3', type: 'user', content: '前面咨询你这两个岗位。', startTime: '01:12:16', speaker: '发言人 1' },
-    { id: '4', type: 'user', content: '你先自己先聊。好的，没问题。', startTime: '01:12:18', speaker: '发言人 2' },
-    { id: '5', type: 'user', content: '好，拜拜。好，再见蔡总。', startTime: '01:12:20', speaker: '发言人 4' },
-  ];
+  const handleUpdateSpeaker = (segmentId: string, originalSpeakerId: string | undefined, name: string, isGlobal: boolean) => {
+    if (isGlobal) {
+        // Global mode: Update the name in the map for the existing speaker ID
+        const targetId = originalSpeakerId || 'unknown_speaker_default'; 
+        
+        // If originalSpeakerId is undefined, we must update all segments that have undefined speaker to use targetId
+        if (!originalSpeakerId) {
+            setLocalSegments(prev => prev.map(seg => {
+                if (!seg.speaker) {
+                    return { ...seg, speaker: targetId };
+                }
+                return seg;
+            }));
+            
+            // Also update meeting.segments for persistence
+            if (meeting.segments) {
+                meeting.segments.forEach(seg => {
+                    if (!seg.speaker) seg.speaker = targetId;
+                });
+            }
+        }
+
+        const newMap = { ...speakerMap, [targetId]: name };
+        setSpeakerMap(newMap);
+        meeting.speakerMap = newMap;
+    } else {
+        // Local mode: 
+        // 1. Generate new unique speaker ID for this segment
+        // 2. Update the segment to point to this new ID
+        // 3. Add the new ID -> Name mapping
+        
+        const newSpeakerId = `${originalSpeakerId || 'unknown'}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+        
+        // Update local segments
+        setLocalSegments(prev => prev.map(seg => {
+            if (seg.id === segmentId) {
+                return { ...seg, speaker: newSpeakerId };
+            }
+            return seg;
+        }));
+        
+        // Update map
+        const newMap = { ...speakerMap, [newSpeakerId]: name };
+        setSpeakerMap(newMap);
+        meeting.speakerMap = newMap;
+        
+        // Note: We should ideally update meeting.segments too for persistence, 
+        // but since we are using local state, we rely on localSegments for rendering.
+        // For simple persistence in this mock:
+        if (meeting.segments) {
+             const segIndex = meeting.segments.findIndex(s => s.id === segmentId);
+             if (segIndex !== -1) {
+                 meeting.segments[segIndex].speaker = newSpeakerId;
+             }
+        }
+    }
+  };
+
+  // Deprecated direct usage of segments, now using localSegments
+  // const segments: TranscriptSegment[] = meeting.segments || ...
 
   const keywords = meeting.keywords || ['合作', '签约', '业务', '客户', '运营', 'AI', '咨询', '面诊', '手术'];
 
@@ -33,37 +196,67 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // TODO: Add Loading State
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/asr/file', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Transcription failed');
+
+      const data = await response.json();
+      if (data.status === 'succeeded' && data.segments) {
+         setLocalSegments(data.segments);
+         // Reset map if needed or merge
+      }
+    } catch (error) {
+      console.error("Upload error:", error);
+      alert("上传转写失败，请检查后端日志");
+    }
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-white">
+    <div className="h-screen bg-white flex flex-col">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-white z-10">
+      <div className="h-14 border-b border-gray-100 flex items-center justify-between px-4 bg-white/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="flex items-center gap-4">
           <button 
             onClick={onBack}
-            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors text-gray-600"
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors"
           >
             <i className="fa-solid fa-arrow-left"></i>
           </button>
-          <h1 className="text-xl font-bold text-gray-800">{meeting.title}</h1>
+          <div>
+            <h1 className="text-base font-medium text-gray-900">{meeting.title}</h1>
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <span>{meeting.date}</span>
+              <span>·</span>
+              <span>{meeting.duration}</span>
+            </div>
+          </div>
         </div>
         <div className="flex items-center gap-3">
-          <button className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors">
-            <i className="fa-solid fa-ellipsis"></i>
-          </button>
-          <button className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors">
-            <i className="fa-regular fa-star"></i>
-          </button>
-          <button className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors">
-            <i className="fa-regular fa-file-lines"></i>
-          </button>
-          <button className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors">
+          <label className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium cursor-pointer hover:bg-blue-100 transition-colors">
+            <i className="fa-solid fa-cloud-arrow-up"></i>
+            <span>导入录音文件</span>
+            <input type="file" accept="audio/*" className="hidden" onChange={handleFileUpload} />
+          </label>
+          <button className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors">
             <i className="fa-solid fa-share-nodes"></i>
           </button>
-          <button className="px-4 py-1.5 bg-[#F0F9FF] text-[#33a3dc] rounded-lg text-sm font-semibold hover:bg-[#E1F3FF] transition-colors flex items-center gap-2">
-            <i className="fa-solid fa-download"></i> 导出
+          <button className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors">
+            <i className="fa-solid fa-ellipsis"></i>
           </button>
         </div>
-      </header>
+      </div>
 
       <div className="flex flex-1 overflow-hidden">
         {/* Right Column: AI Analysis (Moved to Left) */}
@@ -167,7 +360,7 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
             </div>
 
             <div className="space-y-8">
-              {segments.map((segment, index) => (
+              {localSegments.map((segment, index) => (
                 <div key={segment.id || index} className="group">
                   <div className="flex items-center gap-3 mb-2">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs text-white ${
@@ -178,9 +371,11 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
                       {/* Avatar Placeholder */}
                       <i className="fa-solid fa-user"></i>
                     </div>
-                    <span className="text-xs text-gray-400 font-medium">
-                      {segment.speaker || '未知发言人'}
-                    </span>
+                    <SpeakerTag 
+                      speakerId={segment.speaker} 
+                      speakerMap={speakerMap} 
+                      onUpdateName={(speakerId, name, isGlobal) => handleUpdateSpeaker(segment.id, speakerId, name, isGlobal)}
+                    />
                     <span className="text-xs text-gray-300">
                       {segment.startTime || formatTime(index * 15)}
                     </span>

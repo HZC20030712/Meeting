@@ -54,7 +54,96 @@ const App: React.FC = () => {
   // 默认为左侧模式，但在小屏幕下初始化为底部模式，之后由用户手动控制
   const [isBottomMode, setIsBottomMode] = useState(() => window.innerWidth < 768);
   
+  const [isUploading, setIsUploading] = useState(false);
+  
   const recording = useRecording();
+
+  useEffect(() => {
+    // Fetch meetings from backend
+    const fetchMeetings = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/meetings');
+        if (response.ok) {
+          const data = await response.json();
+          setMeetings(data);
+        }
+      } catch (error) {
+        console.error("Failed to fetch meetings:", error);
+      }
+    };
+    
+    fetchMeetings();
+  }, []);
+
+  // 当前选中的会议
+  // const selectedMeeting = meetings.find(m => m.id === selectedMeetingId); // Removed as we use state
+
+  const handleMeetingClick = async (meeting: Meeting) => {
+    // If meeting has no segments locally, try to fetch detail
+    if (!meeting.segments) {
+      try {
+        const response = await fetch(`http://localhost:8000/api/meetings/${meeting.id}`);
+        if (response.ok) {
+          const detail = await response.json();
+          // Update meeting with segments
+          const updatedMeetings = meetings.map(m => 
+            m.id === meeting.id ? { ...m, segments: detail.segments } : m
+          );
+          setMeetings(updatedMeetings);
+          setSelectedMeeting(meeting); // Use setSelectedMeeting directly
+          return;
+        }
+      } catch (error) {
+        console.error("Failed to fetch meeting detail:", error);
+      }
+    }
+    
+    setSelectedMeeting(meeting);
+  };
+
+  const handleBack = () => {
+    setSelectedMeeting(null);
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/asr/file', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Transcription failed');
+
+      const data = await response.json();
+      if (data.status === 'succeeded' && data.segments) {
+         // Create a new meeting from the uploaded file
+         const newMeeting: Meeting = {
+           id: data.meeting_id || Date.now().toString(),
+           title: file.name.replace(/\.[^/.]+$/, ""), // Use filename as title
+           host: '未知发言人',
+           duration: data.segments[data.segments.length - 1]?.endTime || '00:00',
+           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+           date: '刚刚',
+           type: 'product',
+           segments: data.segments
+         };
+         // Refresh list from backend to ensure consistency, or just add local
+         setMeetings(prev => [newMeeting, ...prev]);
+      }
+    } catch (error) {
+      console.error("Upload error:", error);
+      alert("上传转写失败，请检查后端日志及 .env 配置");
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   // 移除自动 resize 监听，改为手动触发
   // 只在组件挂载时进行一次初始化检查（上面的 useState 已经做了）
@@ -142,15 +231,33 @@ const App: React.FC = () => {
                       {getPageDescription()}
                     </span>
                   </div>
-                  <button 
-                    onClick={() => setIsQuickCreateOpen(true)}
-                    className="group relative px-6 py-2.5 rounded-full bg-white border border-[#EEEEEE] shadow-sm hover:shadow-md transition-all active:scale-95"
-                  >
-                    <div className="relative flex items-center gap-2 text-sm font-bold text-[#33a3dc]">
-                      <i className="fa-solid fa-plus text-[10px]"></i>
-                      <span>快速新建</span>
-                    </div>
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <label className={`
+                      group relative px-6 py-2.5 rounded-full bg-blue-50 border border-blue-100 shadow-sm hover:shadow-md transition-all active:scale-95 cursor-pointer
+                      ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}
+                    `}>
+                      <div className="relative flex items-center gap-2 text-sm font-bold text-[#33a3dc]">
+                        <i className={`fa-solid ${isUploading ? 'fa-spinner fa-spin' : 'fa-cloud-arrow-up'} text-[10px]`}></i>
+                        <span>{isUploading ? '上传转写中...' : '导入录音'}</span>
+                      </div>
+                      <input 
+                        type="file" 
+                        accept="audio/*" 
+                        className="hidden" 
+                        onChange={handleFileUpload} 
+                        disabled={isUploading}
+                      />
+                    </label>
+                    <button 
+                      onClick={() => setIsRecordingModalOpen(true)}
+                      className="group relative px-6 py-2.5 rounded-full bg-white border border-[#EEEEEE] shadow-sm hover:shadow-md transition-all active:scale-95"
+                    >
+                      <div className="relative flex items-center gap-2 text-sm font-bold text-[#33a3dc]">
+                        <i className="fa-solid fa-plus text-[10px]"></i>
+                        <span>快速新建</span>
+                      </div>
+                    </button>
+                  </div>
                 </div>
                 
                 {activeTab === AppTab.FOLDERS ? (

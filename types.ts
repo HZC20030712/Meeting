@@ -9,6 +9,7 @@ export interface Meeting {
   date: string;
   type: 'strategy' | 'product' | 'recruitment' | 'interview' | 'other';
   segments?: TranscriptSegment[];
+  speakerMap?: Record<string, string>;
   summary?: string;
   keywords?: string[];
   audioUrl?: string;

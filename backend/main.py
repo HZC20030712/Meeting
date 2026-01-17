@@ -26,8 +26,12 @@ from dashscope.audio.asr import Transcription
 from dotenv import load_dotenv
 load_dotenv()
 
+# --- 持久化路径配置 (适配 ModelScope) ---
+# ModelScope 提供的持久化存储路径为 /mnt/workspace
+PERSISTENCE_ROOT = "/mnt/workspace" if os.path.exists("/mnt/workspace") else os.path.dirname(__file__)
+
 # --- 日志配置 ---
-LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+LOG_DIR = os.path.join(PERSISTENCE_ROOT, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 logger.add(os.path.join(LOG_DIR, "server_{time:YYYYMMDD_HHmm}.log"), rotation="1 day", retention="7 days", level="INFO")
 
@@ -57,9 +61,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+UPLOAD_DIR = os.path.join(PERSISTENCE_ROOT, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+app.mount("/api/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, DateTime
@@ -69,7 +73,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
 # --- Database Setup (SQLite + SQLAlchemy) ---
 # Create a local SQLite database file
-SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'meetings.db')}"
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(PERSISTENCE_ROOT, 'meetings.db')}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
@@ -1116,6 +1120,60 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"Scheduling post-processing for meeting {qwen_client.meeting_id}")
             loop.run_in_executor(None, process_realtime_recording, qwen_client.meeting_id, qwen_client.audio_path)
 
-@app.get("/")
-def read_root():
+class ChatRequest(BaseModel):
+    message: str
+
+@app.post("/api/chat")
+async def chat_with_ai(request: ChatRequest):
+    try:
+        response = client.chat.completions.create(
+            model="gemini-3-flash-preview",
+            messages=[
+                {"role": "system", "content": "你是一个会议助手，请根据用户的提问回答关于会议的问题。"},
+                {"role": "user", "content": request.message}
+            ]
+        )
+        return {"response": response.choices[0].message.content}
+    except Exception as e:
+        logger.error(f"Chat Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SocialInsightRequest(BaseModel):
+    name: str
+    role: str
+    company: str
+    context: str
+
+@app.post("/api/social/insights")
+async def generate_social_insights(request: SocialInsightRequest):
+    try:
+        prompt = f"""
+        分析以下专业人士的档案：姓名 {request.name}，职位 {request.role}，公司 {request.company}。
+        当前背景/会议目的：{request.context}。
+        
+        请生成：
+        1. 三个破冰话题（分为：Professional-专业, Interest-兴趣, Dynamic-动态）。
+        2. 一条简短、策略性的“会议建议” (nudge)，用于指导如何与此人沟通。
+        
+        请直接返回 JSON 格式数据。所有内容请使用中文。
+        """
+        
+        response = client.chat.completions.create(
+            model="gemini-3-flash-preview",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={ "type": "json_object" }
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        logger.error(f"Social Insight Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- 静态文件托管 (适配前端) ---
+# 前端打包后的文件存放在 dist 目录下
+dist_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dist")
+if os.path.exists(dist_path):
+    app.mount("/", StaticFiles(directory=dist_path, html=True), name="static")
+
+@app.get("/health")
+def health_check():
     return {"status": "ok", "service": "Meeting Qwen3 ASR Backend"}

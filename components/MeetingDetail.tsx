@@ -183,7 +183,7 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
         
         // Persist to Backend
         try {
-            await fetch(`http://localhost:8000/api/meetings/${meeting.id}/speakers`, {
+            await fetch(`/api/meetings/${meeting.id}/speakers`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ original_name: targetId, new_name: name })
@@ -248,7 +248,7 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
     formData.append('file', file);
 
     try {
-      const response = await fetch('http://localhost:8000/api/asr/file', {
+      const response = await fetch('/api/asr/file', {
         method: 'POST',
         body: formData,
       });
@@ -286,7 +286,7 @@ const MeetingDetail: React.FC<MeetingDetailProps> = ({ meeting, onBack }) => {
     setSpeakerMap(prev => ({ ...prev, ...config.speaker_map }));
     
     try {
-        const res = await fetch(`http://localhost:8000/api/meetings/${meeting.id}/analysis`, {
+        const res = await fetch(`/api/meetings/${meeting.id}/analysis`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(config)

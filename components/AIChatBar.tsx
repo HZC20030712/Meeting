@@ -20,7 +20,7 @@ const AIChatBar: React.FC<AIChatBarProps> = ({ className = '' }) => {
     setResponse(''); // Clear previous response
 
     try {
-      const res = await fetch('http://localhost:8000/chat', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

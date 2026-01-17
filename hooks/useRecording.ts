@@ -31,7 +31,9 @@ export const useRecording = () => {
       setStatus('initializing');
       
       // 1. Connect WebSocket
-      const ws = new WebSocket('ws://localhost:8000/ws/asr');
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws/asr`;
+      const ws = new WebSocket(wsUrl);
       websocketRef.current = ws;
 
       ws.onopen = async () => {

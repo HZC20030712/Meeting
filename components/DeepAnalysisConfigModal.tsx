@@ -38,7 +38,7 @@ const DeepAnalysisConfigModal: React.FC<DeepAnalysisConfigModalProps> = ({
       setLocalSpeakerMap({ ...initialSpeakerMap });
       // Fetch presets
       setLoadingPresets(true);
-      fetch('http://localhost:8000/api/presets') // assuming localhost for dev
+      fetch('/api/presets') // assuming localhost for dev
         .then(res => res.json())
         .then(data => {
             // Filter out 'full_summary' from Deep Analysis options

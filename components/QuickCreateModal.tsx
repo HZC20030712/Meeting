@@ -55,7 +55,7 @@ const QuickCreateModal: React.FC<QuickCreateModalProps> = ({ onClose, onRecordSt
     const formData = new FormData();
     formData.append('file', file);
 
-    xhr.open('POST', 'http://localhost:8000/transcribe-file', true);
+    xhr.open('POST', '/api/asr/file', true);
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {

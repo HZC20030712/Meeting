@@ -62,7 +62,7 @@ const App: React.FC = () => {
     // Fetch meetings from backend
     const fetchMeetings = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/meetings');
+        const response = await fetch('/api/meetings');
         if (response.ok) {
           const data = await response.json();
           setMeetings(data);
@@ -82,7 +82,7 @@ const App: React.FC = () => {
     // If meeting has no segments locally, try to fetch detail
     if (!meeting.segments) {
       try {
-        const response = await fetch(`http://localhost:8000/api/meetings/${meeting.id}`);
+        const response = await fetch(`/api/meetings/${meeting.id}`);
         if (response.ok) {
           const detail = await response.json();
           const updatedMeeting: Meeting = {
@@ -118,7 +118,7 @@ const App: React.FC = () => {
     formData.append('file', file);
 
     try {
-      const response = await fetch('http://localhost:8000/api/asr/file', {
+      const response = await fetch('/api/asr/file', {
         method: 'POST',
         body: formData,
       });

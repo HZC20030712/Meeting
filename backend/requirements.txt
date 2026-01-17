@@ -4,3 +4,9 @@ uvicorn
 python-dotenv
 websockets
 openai
+loguru
+oss2
+requests
+sqlalchemy
+websocket-client
+python-multipart

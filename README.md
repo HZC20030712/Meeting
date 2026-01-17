@@ -39,6 +39,24 @@ Meeting AI 是一个智能化的会议管理与分析平台，集成了实时语
   - DashScope API Key (用于 ASR)
   - OpenAI/Gemini API Key (用于 AI 对话)
 
+### 快捷启动
+
+项目根目录下提供了一个便捷的启动脚本 `dev.sh`，可以一键启动前后端：
+
+```bash
+# 赋予执行权限 (仅需一次)
+chmod +x dev.sh
+
+# 启动前后端
+./dev.sh
+
+# 仅启动后端并开启调试模式
+./dev.sh backend --debug
+
+# 仅启动前端
+./dev.sh frontend
+```
+
 ### 1. 后端设置
 
 进入 `backend` 目录并使用 `uv` 管理环境：

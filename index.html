@@ -6,6 +6,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>MeetingAI - 您的智能会议助手</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            graphite: '#2C2E33',
+            mutedBlue: '#3B5998',
+            slateGray: '#64748B',
+            warmPaper: '#F9F9F7',
+            surface: '#FFFFFF',
+          },
+          fontFamily: {
+            sans: ['Inter', 'San Francisco', 'Roboto', 'sans-serif'],
+          },
+          boxShadow: {
+            'soft': '0 8px 30px rgba(0,0,0,0.04)',
+            'float': '0 20px 40px rgba(44, 46, 51, 0.08)',
+          }
+        }
+      }
+    }
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
     :root {

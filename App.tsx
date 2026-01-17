@@ -6,8 +6,11 @@ import MeetingList from './components/MeetingList';
 import PersonaCapsules from './components/PersonaCapsules';
 import FolderGrid from './components/FolderGrid';
 import RecordingModal from './components/RecordingModal';
+import QuickCreateModal from './components/QuickCreateModal';
 import AIChatBar from './components/AIChatBar';
 import MeetingDetail from './components/MeetingDetail';
+import TodoList from './components/TodoList';
+import SocialNetworkRoot from './components/social/SocialNetworkRoot';
 import { AppTab, Meeting, Folder } from './types';
 import { useRecording } from './hooks/useRecording';
 
@@ -44,6 +47,7 @@ const INITIAL_MOCK_MEETINGS: Meeting[] = [
 const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
+  const [isQuickCreateOpen, setIsQuickCreateOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<AppTab>(AppTab.RECENT);
   const [meetings, setMeetings] = useState<Meeting[]>(INITIAL_MOCK_MEETINGS);
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
@@ -217,7 +221,7 @@ const App: React.FC = () => {
                 </section>
               )}
 
-              <section className="max-w-5xl mx-auto md:mx-0">
+              <section className="w-full max-w-none">
                 <div className="flex items-center justify-between mb-8 px-1">
                   <div className="flex flex-col">
                     <h2 className="text-2xl font-black text-[#1A1A1A] tracking-tighter">
@@ -259,15 +263,14 @@ const App: React.FC = () => {
                 {activeTab === AppTab.FOLDERS ? (
                   <FolderGrid />
                 ) : activeTab === AppTab.SOCIAL ? (
-                  <div className="bg-white border border-gray-100 rounded-3xl p-12 text-center flex flex-col items-center justify-center animate-in fade-in slide-in-from-bottom-4 duration-500">
-                    <div className="w-20 h-20 bg-[#F0F9FF] rounded-full flex items-center justify-center text-[#33a3dc] mb-6">
-                      <i className="fa-solid fa-users-viewfinder text-3xl"></i>
-                    </div>
-                    <h3 className="text-xl font-black text-gray-900 mb-2">社交网络分析正在准备中</h3>
-                    <p className="text-sm text-gray-500 max-w-sm">基于会议对话，自动提取关键决策者、跨部门连接点，助您洞察项目背后的影响力地图。</p>
+                  <div className="h-[calc(100vh-180px)] w-full rounded-3xl overflow-hidden border border-gray-200 shadow-sm bg-gray-50">
+                    <SocialNetworkRoot />
                   </div>
                 ) : (
-                  <MeetingList meetings={meetings} onMeetingClick={setSelectedMeeting} />
+                  <>
+                    <MeetingList meetings={meetings} onMeetingClick={setSelectedMeeting} />
+                    <TodoList />
+                  </>
                 )}
               </section>
             </div>
@@ -285,6 +288,14 @@ const App: React.FC = () => {
               recording={recording}
             />
           </>
+        )}
+
+        {isQuickCreateOpen && (
+          <QuickCreateModal 
+            onClose={() => setIsQuickCreateOpen(false)}
+            onRecordStart={() => setIsRecordingModalOpen(true)}
+            onSuccess={addNewMeeting}
+          />
         )}
       </main>
     </div>
